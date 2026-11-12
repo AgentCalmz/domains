@@ -11,8 +11,10 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -61,7 +63,7 @@ USER_AGENT = "TeamPeach-DomainIntelligence/0.1 (+https://teampeach.org)"
 
 def normalize_domain(value: str) -> str | None:
     """Return a lowercase ASCII domain name, or None for invalid input."""
-    value = value.strip().strip("﻿").strip().strip('"').strip("'")
+    value = value.strip().strip("\ufeff").strip().strip('"').strip("'")
     if not value or value.startswith(("#", ";")):
         return None
 
@@ -162,7 +164,6 @@ def write_gzip(path: Path, domains: list[str]) -> str:
 def main() -> int:
     output_root = Path(os.getenv("OUTPUT_DIR", "output"))
     if output_root.exists():
-        import shutil
         shutil.rmtree(output_root)
 
     lagos_now = datetime.now(ZoneInfo("Africa/Lagos"))
@@ -214,12 +215,13 @@ def main() -> int:
                     "domain_candidates": candidates,
                     "unique_domains": len(domains),
                     "duplicates_and_invalid_removed": max(candidates - len(domains), 0),
+                    "by_tld": dict(sorted(Counter(d.rsplit(".", 1)[-1] for d in domains).items())),
                     "output_file": filename,
                     "sha256": digest,
                 }
             )
             summary["counts"][key] = len(domains)
-        except Exception as exc:  # preserve optional-source failures in the summary
+        except Exception as exc:
             record.update({"status": "failed", "error": str(exc)})
             if config["required"]:
                 required_failures.append(key)
@@ -234,8 +236,6 @@ def main() -> int:
 
     if optional_failures:
         summary["status"] = "partial"
-    summary["counts"]["new_domains"] = summary["counts"].get("new_domains", 0)
-    summary["counts"]["removed_domains"] = summary["counts"].get("removed_domains", 0)
 
     (snapshot_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
