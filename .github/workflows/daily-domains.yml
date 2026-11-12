@@ -1,6 +1,13 @@
 name: Daily domain ingestion
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/daily-domains.yml"
+      - "scripts/**"
+      - "tests/**"
   schedule:
     - cron: "45 7 * * *"
       timezone: "Africa/Lagos"
