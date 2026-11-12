@@ -43,12 +43,12 @@ class DomainNormalizationTests(unittest.TestCase):
 
         def row_for(domain):
             bucket = hashlib.sha256(domain.encode("ascii")).digest()[0]
-            prefix = domain + "\\t"
+            prefix = domain + "\t"
             return next((row for row in shards[bucket] if row.startswith(prefix)), None)
 
-        self.assertEqual(row_for("example.com"), "example.com\\t1")
-        self.assertEqual(row_for("shared.net"), "shared.net\\t3")
-        self.assertEqual(row_for("expired.org"), "expired.org\\t4")
+        self.assertEqual(row_for("example.com"), "example.com\t1")
+        self.assertEqual(row_for("shared.net"), "shared.net\t3")
+        self.assertEqual(row_for("expired.org"), "expired.org\t4")
 
 
 if __name__ == "__main__":
