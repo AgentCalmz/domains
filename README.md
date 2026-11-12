@@ -34,6 +34,7 @@ Endpoints:
 - `GET /v1/health` — health check
 - `GET /v1/latest` — latest feed totals and TLD breakdowns
 - `GET /v1/summary` — alias for latest summary
+- `GET /v1/new-domains` — streams the latest compressed newly observed domain list for browser-side discovery; the Worker does not decompress or scan the full feed
 - `GET /v1/domain?domain=example.com` — exact domain lookup across the four feeds
 
 The Worker reads public GitHub Release assets and caches the immutable index shards. The API does not scan full domain lists.

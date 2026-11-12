@@ -180,6 +180,7 @@ async function handleRequest(request, env, ctx) {
         health: "/v1/health",
         latest: "/v1/latest",
         summary: "/v1/summary",
+        new_domains: "/v1/new-domains",
         domain_lookup: "/v1/domain?domain=example.com",
       },
     });
@@ -201,6 +202,33 @@ async function handleRequest(request, env, ctx) {
       lookup_index: summary.lookup_index,
       notes: summary.notes,
     }, 200, { "Cache-Control": "public, max-age=60" });
+  }
+
+  if (url.pathname === "/v1/new-domains") {
+    const { latest, summary, tag } = await getLatest(ctx);
+    if (summary.sources?.new_domains?.status !== "success") {
+      throw new Error("The latest newly observed domain feed is not available.");
+    }
+
+    // Stream the immutable gzip asset directly. The Worker does not decompress
+    // or scan the full feed, keeping CPU usage low.
+    const assetUrl = `${RELEASES_BASE}/${tag}/new_domains.txt.gz`;
+    const asset = await cachedFetch(assetUrl, 86400);
+    if (!asset.body) {
+      throw new Error("The latest newly observed domain feed is empty.");
+    }
+
+    const headers = new Headers({
+      ...CORS_HEADERS,
+      "Content-Type": "application/gzip",
+      "Cache-Control": "public, max-age=3600, s-maxage=86400",
+      "Access-Control-Expose-Headers": "X-Snapshot-Date, X-Domain-Count",
+      "X-Snapshot-Date": latest.date,
+      "X-Domain-Count": String(summary.counts?.new_domains || 0),
+    });
+    const contentLength = asset.headers.get("Content-Length");
+    if (contentLength) headers.set("Content-Length", contentLength);
+    return new Response(asset.body, { status: 200, headers });
   }
 
   if (url.pathname === "/v1/domain" || url.pathname === "/v1/lookup") {
