@@ -110,6 +110,8 @@ def parse_domains(data: bytes) -> tuple[list[str], int, int]:
         if not row:
             continue
         candidate = row[0].strip()
+        if not candidate or candidate.startswith(("#", ";")):
+            continue
         if candidate.lower() in {"domain", "domains", "domain_name", "hostname"}:
             continue
         candidates += 1
