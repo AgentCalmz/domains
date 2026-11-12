@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: daily-domain-ingestion
@@ -22,17 +22,17 @@ concurrency:
 
 jobs:
   ingest:
-    name: Fetch and prepare domain datasets
+    name: Fetch and publish domain datasets
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -42,30 +42,8 @@ jobs:
       - name: Download, validate and package source feeds
         run: python scripts/collect_domains.py
 
-      - name: Save temporary snapshot artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: domains-daily-${{ github.run_id }}
-          path: output/
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Publish snapshot to Cloudflare R2 when configured
+      - name: Publish dated GitHub Release and upload domain files
         env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-        run: |
-          if [[ -z "$R2_ACCOUNT_ID" && -z "$R2_ACCESS_KEY_ID" && -z "$R2_SECRET_ACCESS_KEY" && -z "$R2_BUCKET_NAME" ]]; then
-            echo "R2 is not configured yet. The snapshot is available as a 7-day workflow artifact." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          if [[ -z "$R2_ACCOUNT_ID" || -z "$R2_ACCESS_KEY_ID" || -z "$R2_SECRET_ACCESS_KEY" || -z "$R2_BUCKET_NAME" ]]; then
-            echo "R2 configuration is incomplete. Add all four R2 repository secrets." >&2
-            exit 1
-          fi
-
-          python -m pip install --disable-pip-version-check boto3
-          python scripts/upload_r2.py
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python scripts/publish_release.py
