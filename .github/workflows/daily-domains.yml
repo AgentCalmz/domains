@@ -8,6 +8,7 @@ on:
       - ".github/workflows/daily-domains.yml"
       - "scripts/**"
       - "tests/**"
+      - "worker/**"
   schedule:
     - cron: "45 7 * * *"
       timezone: "Africa/Lagos"
@@ -36,7 +37,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Test domain normalisation
+      - name: Check Worker JavaScript syntax
+        run: node --check worker/index.js
+
+      - name: Test domain normalisation and lookup index
         run: python -m unittest discover -s tests -v
 
       - name: Download, validate and package source feeds

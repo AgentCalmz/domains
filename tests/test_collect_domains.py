@@ -1,10 +1,11 @@
+import hashlib
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from collect_domains import normalize_domain, parse_domains
+from collect_domains import build_lookup_shards, normalize_domain, parse_domains
 
 
 class DomainNormalizationTests(unittest.TestCase):
@@ -28,6 +29,26 @@ class DomainNormalizationTests(unittest.TestCase):
         self.assertEqual(domains, ["example.com", "foo.org"])
         self.assertEqual(line_count, 5)
         self.assertEqual(candidates, 4)
+
+    def test_lookup_shards_combine_source_flags(self):
+        source_sets = {
+            "new_domains": ["example.com", "shared.net"],
+            "removed_domains": ["shared.net"],
+            "whoisfreaks_expired": ["expired.org"],
+            "whoisfreaks_dropped": [],
+        }
+        shards, unique_count = build_lookup_shards(source_sets)
+        self.assertEqual(len(shards), 256)
+        self.assertEqual(unique_count, 3)
+
+        def row_for(domain):
+            bucket = hashlib.sha256(domain.encode("ascii")).digest()[0]
+            prefix = domain + "\t"
+            return next((row for row in shards[bucket] if row.startswith(prefix)), None)
+
+        self.assertEqual(row_for("example.com"), "example.com\t1")
+        self.assertEqual(row_for("shared.net"), "shared.net\t3")
+        self.assertEqual(row_for("expired.org"), "expired.org\t4")
 
 
 if __name__ == "__main__":
