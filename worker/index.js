@@ -28,36 +28,27 @@ function json(data, status = 200, extraHeaders = {}) {
   });
 }
 
-async function cachedFetch(url, ttlSeconds, ctx) {
-  const cache = caches.default;
-  const cacheKey = new Request(url, { method: "GET" });
-  const cached = await cache.match(cacheKey);
-  if (cached) return cached;
-
-  const upstream = await fetch(cacheKey, {
+async function cachedFetch(url, ttlSeconds) {
+  // Cache the GitHub asset subrequest at Cloudflare's edge. This works even
+  // while the Worker is using its temporary workers.dev hostname.
+  const upstream = await fetch(url, {
     redirect: "follow",
     headers: { "User-Agent": "TeamPeach-Domain-Intelligence/1.0" },
+    cf: {
+      cacheEverything: true,
+      cacheTtl: ttlSeconds,
+    },
   });
 
   if (!upstream.ok) {
     throw new Error(`Data source returned HTTP ${upstream.status}`);
   }
 
-  const headers = new Headers(upstream.headers);
-  headers.set("Cache-Control", `public, max-age=${ttlSeconds}`);
-  headers.delete("Set-Cookie");
-
-  const response = new Response(upstream.body, {
-    status: upstream.status,
-    headers,
-  });
-
-  ctx.waitUntil(cache.put(cacheKey, response.clone()).catch(() => {}));
-  return response;
+  return upstream;
 }
 
 async function getJson(url, ttlSeconds, ctx) {
-  const response = await cachedFetch(url, ttlSeconds, ctx);
+  const response = await cachedFetch(url, ttlSeconds);
   return response.json();
 }
 
@@ -121,7 +112,7 @@ async function getBucket(domain) {
 async function lookupDomain(domain, latest, ctx) {
   const bucket = await getBucket(domain);
   const indexUrl = `${RELEASES_BASE}/${latest.tag}/index-${bucket}.txt.gz`;
-  const response = await cachedFetch(indexUrl, 86400, ctx);
+  const response = await cachedFetch(indexUrl, 86400);
 
   if (!response.body) {
     throw new Error("The lookup index is empty.");
