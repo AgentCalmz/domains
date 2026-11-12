@@ -59,6 +59,8 @@ SOURCES = {
 
 MAX_DOWNLOAD_BYTES = 35 * 1024 * 1024
 USER_AGENT = "TeamPeach-DomainIntelligence/0.1 (+https://teampeach.org)"
+SOURCE_FLAGS = {"new_domains": 1, "removed_domains": 2, "whoisfreaks_expired": 4, "whoisfreaks_dropped": 8}
+LOOKUP_BUCKETS = 256
 
 
 def normalize_domain(value: str) -> str | None:
@@ -163,6 +165,28 @@ def write_gzip(path: Path, domains: list[str]) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def build_lookup_shards(source_domain_sets: dict[str, list[str]]) -> tuple[list[list[str]], int]:
+    """Build 256 SHA-256-partitioned exact-lookup shards.
+
+    Each line is: normalised-domain<TAB>source-bitmask. Rows are sorted by domain
+    so the Worker can binary-search one small shard for an exact lookup.
+    """
+    flags_by_domain: dict[str, int] = {}
+    for source_name, bit in SOURCE_FLAGS.items():
+        for domain in source_domain_sets.get(source_name, []):
+            flags_by_domain[domain] = flags_by_domain.get(domain, 0) | bit
+
+    shards: list[list[str]] = [[] for _ in range(LOOKUP_BUCKETS)]
+    for domain, flags in flags_by_domain.items():
+        bucket = hashlib.sha256(domain.encode("ascii")).digest()[0]
+        shards[bucket].append(f"{domain}\\t{flags}")
+
+    for rows in shards:
+        rows.sort()
+
+    return shards, len(flags_by_domain)
+
+
 def main() -> int:
     output_root = Path(os.getenv("OUTPUT_DIR", "output"))
     if output_root.exists():
@@ -191,6 +215,7 @@ def main() -> int:
 
     required_failures: list[str] = []
     optional_failures: list[str] = []
+    source_domain_sets: dict[str, list[str]] = {}
 
     for key, config in SOURCES.items():
         record = {
@@ -207,6 +232,7 @@ def main() -> int:
                     f"{config['minimum_domains']}"
                 )
 
+            source_domain_sets[key] = domains
             filename = f"{key}.txt.gz"
             digest = write_gzip(snapshot_dir / filename, domains)
             record.update(
@@ -239,6 +265,18 @@ def main() -> int:
     if optional_failures:
         summary["status"] = "partial"
 
+    lookup_shards, lookup_domain_count = build_lookup_shards(source_domain_sets)
+    for bucket_number, rows in enumerate(lookup_shards):
+        write_gzip(snapshot_dir / f"index-{bucket_number:02x}.txt.gz", rows)
+
+    summary["lookup_index"] = {
+        "algorithm": "sha256-first-byte",
+        "bucket_count": LOOKUP_BUCKETS,
+        "unique_domains": lookup_domain_count,
+        "filename_pattern": "index-{bucket}.txt.gz",
+        "row_format": "domain<TAB>source_bitmask",
+    }
+
     (snapshot_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -250,6 +288,7 @@ def main() -> int:
         "snapshot_prefix": f"daily/{run_date}/",
         "summary_file": f"daily/{run_date}/summary.json",
         "fetched_at": fetched_at,
+        "lookup_index": summary["lookup_index"],
     }
     (output_root / "latest.json").write_text(
         json.dumps(latest, indent=2, sort_keys=True) + "\n",
