@@ -179,7 +179,7 @@ def build_lookup_shards(source_domain_sets: dict[str, list[str]]) -> tuple[list[
     shards: list[list[str]] = [[] for _ in range(LOOKUP_BUCKETS)]
     for domain, flags in flags_by_domain.items():
         bucket = hashlib.sha256(domain.encode("ascii")).digest()[0]
-        shards[bucket].append(f"{domain}\\t{flags}")
+        shards[bucket].append(f"{domain}\t{flags}")
 
     for rows in shards:
         rows.sort()
