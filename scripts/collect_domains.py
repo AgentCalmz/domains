@@ -284,7 +284,7 @@ def build_lookup_shards(source_domain_sets: dict[str, list[str]]) -> tuple[list[
 def count_domain_categories(domains: list[str]) -> dict[str, int]:
     """Count unique domains carrying transparent, overlapping name-based category clues."""
     totals: Counter[str] = Counter()
-    for domain in domains:
+    for domain in set(domains):
         name = domain.rsplit(".", 1)[0].lower()
         parts = set(re.findall(r"[a-z0-9]+", name))
         compact = re.sub(r"[^a-z0-9]", "", name)
