@@ -166,13 +166,13 @@ function isSafePublicDomain(domain) {
   if (domain === "localhost" || domain.endsWith(".localhost") ||
       domain.endsWith(".local") || domain.endsWith(".internal") ||
       domain.endsWith(".test") || domain.endsWith(".invalid")) return false;
-  if (/^\\d{1,3}(?:\\.\\d{1,3}){3}$/.test(domain) || domain.includes(":")) return false;
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain) || domain.includes(":")) return false;
   return domain.includes(".") && domain.split(".").every((label) => label.length > 0);
 }
 
 function isSameSiteHost(hostname, rootDomain) {
-  const host = hostname.toLowerCase().replace(/\\.$/, "");
-  return host === rootDomain || host === `www.${rootDomain}` ||
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+  return host === rootDomain || host === "www." + rootDomain ||
     (rootDomain.startsWith("www.") && host === rootDomain.slice(4));
 }
 
@@ -212,25 +212,25 @@ function decodeHtmlText(value) {
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
-    .replace(/\\s+/g, " ")
+    .replace(/\s+/g, " ")
     .trim()
     .slice(0, 500);
 }
 
 function extractSiteMetadata(html) {
-  const titleMatch = html.match(/<title\\b[^>]*>([\\s\\S]{0,1000}?)<\\/title>/i);
+  const titleMatch = html.match(/<title\b[^>]*>([\s\S]{0,1000}?)<\/title>/i);
   let description = "";
-  const metaTags = html.match(/<meta\\b[^>]*>/gi) || [];
+  const metaTags = html.match(/<meta\b[^>]*>/gi) || [];
   for (const tag of metaTags) {
-    if (!/\\bname\\s*=\\s*["']description["']/i.test(tag)) continue;
-    const value = tag.match(/\\bcontent\\s*=\\s*["']([^"']{0,1000})["']/i);
+    if (!/\bname\s*=\s*["']description["']/i.test(tag)) continue;
+    const value = tag.match(/\bcontent\s*=\s*["']([^"']{0,1000})["']/i);
     if (value) description = decodeHtmlText(value[1]);
     break;
   }
   const pageText = decodeHtmlText(
     html
-      .replace(/<!--[\\s\\S]*?-->/g, " ")
-      .replace(/<(script|style|noscript|svg)\\b[^>]*>[\\s\\S]*?<\\/\\1>/gi, " ")
+      .replace(/<!--[\s\S]*?-->/g, " ")
+      .replace(/<(script|style|noscript|svg)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
       .replace(/<[^>]+>/g, " ")
   ).slice(0, 900);
   return {
@@ -243,11 +243,11 @@ function extractSiteMetadata(html) {
 function parkedPageLikely(html, metadata) {
   const sample = (metadata.title + " " + metadata.description + " " +
     html.slice(0, 12000).replace(/<[^>]*>/g, " ")).toLowerCase();
-  return /domain (name )?(is )?for sale|buy this domain|make an offer for (this )?domain|domain parking|parked free|parkingcrew|afternic|sedo\\.com|hugedomains|dan\\.com|this domain may be for sale|domain is available for purchase/.test(sample);
+  return /domain (name )?(is )?for sale|buy this domain|make an offer for (this )?domain|domain parking|parked free|parkingcrew|afternic|sedo\.com|hugedomains|dan\.com|this domain may be for sale|domain is available for purchase/.test(sample);
 }
 
 async function requestSitePage(domain, protocol) {
-  let current = new URL(`${protocol}//${domain}/`);
+  let current = new URL(protocol + "//" + domain + "/");
   for (let redirects = 0; redirects <= 5; redirects += 1) {
     if (!["https:", "http:"].includes(current.protocol) ||
         current.username || current.password || current.port ||
