@@ -52,21 +52,62 @@ async function getJson(url, ttlSeconds, ctx) {
   return response.json();
 }
 
+async function listDatedReleases() {
+  const releasesUrl = `https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`;
+  const releasesResponse = await cachedFetch(releasesUrl, 1800);
+  const releases = await releasesResponse.json();
+  return (Array.isArray(releases) ? releases : [])
+    .map((release) => {
+      const match = String(release.tag_name || "").match(/^daily-(\d{4}-\d{2}-\d{2})$/);
+      return match ? { date: match[1], tag: release.tag_name } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+async function getLatestFromDatedReleases(pointerError) {
+  const releases = await listDatedReleases();
+  for (const release of releases.slice(0, 5)) {
+    try {
+      const summary = await getJson(`${RELEASES_BASE}/${release.tag}/summary.json`, 300);
+      if (!summary.lookup_index || summary.lookup_index.bucket_count !== 256) continue;
+      return {
+        latest: { date: release.date, snapshot_prefix: `daily/${release.date}/` },
+        summary,
+        tag: release.tag,
+      };
+    } catch {
+      // Try the next published daily release if the newest one is incomplete.
+    }
+  }
+  throw new Error(
+    pointerError && pointerError.message
+      ? pointerError.message
+      : "No valid dated domain snapshot is currently available.",
+  );
+}
+
 async function getLatest(ctx) {
-  const latest = await getJson(LATEST_URL, 180, ctx);
-  if (!latest || !/^\d{4}-\d{2}-\d{2}$/.test(latest.date || "")) {
-    throw new Error("The latest domain snapshot pointer is invalid.");
+  try {
+    const latest = await getJson(LATEST_URL, 180, ctx);
+    if (!latest || !/^\d{4}-\d{2}-\d{2}$/.test(latest.date || "")) {
+      throw new Error("The latest domain snapshot pointer is invalid.");
+    }
+
+    const tag = `daily-${latest.date}`;
+    const summaryUrl = `${RELEASES_BASE}/${tag}/summary.json`;
+    const summary = await getJson(summaryUrl, 300, ctx);
+
+    if (!summary.lookup_index || summary.lookup_index.bucket_count !== 256) {
+      throw new Error("The daily lookup index has not been published yet.");
+    }
+
+    return { latest, summary, tag };
+  } catch (error) {
+    // Domain discovery should survive a stale or temporarily unavailable
+    // latest.json pointer by resolving the newest complete daily release.
+    return getLatestFromDatedReleases(error);
   }
-
-  const tag = `daily-${latest.date}`;
-  const summaryUrl = `${RELEASES_BASE}/${tag}/summary.json`;
-  const summary = await getJson(summaryUrl, 300, ctx);
-
-  if (!summary.lookup_index || summary.lookup_index.bucket_count !== 256) {
-    throw new Error("The daily lookup index has not been published yet. Try again after the next successful ingestion run.");
-  }
-
-  return { latest, summary, tag };
 }
 
 function normalizeDomain(input) {
@@ -353,16 +394,7 @@ async function checkSite(domain) {
 }
 
 async function loadTrendHistory(days) {
-  const releasesUrl = `https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`;
-  const releasesResponse = await cachedFetch(releasesUrl, 1800);
-  const releases = await releasesResponse.json();
-  const dated = (Array.isArray(releases) ? releases : [])
-    .map((release) => {
-      const match = String(release.tag_name || "").match(/^daily-(\d{4}-\d{2}-\d{2})$/);
-      return match ? { date: match[1], tag: release.tag_name } : null;
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.date.localeCompare(a.date));
+  const dated = await listDatedReleases();
 
   // Anchor the lookback to the newest published snapshot, not the worker's
   // wall-clock date, so a delayed daily release does not create an empty chart.
@@ -392,6 +424,9 @@ async function loadTrendHistory(days) {
           new_domains: sources.new_domains && sources.new_domains.by_tld || {},
           removed_domains: sources.removed_domains && sources.removed_domains.by_tld || {},
         },
+        by_category: {
+          new_domains: sources.new_domains && sources.new_domains.by_category || {},
+        },
       };
     } catch {
       return null;
@@ -409,7 +444,7 @@ async function loadTrendHistory(days) {
     available_days: validHistory.length,
     latest_date: validHistory[validHistory.length - 1].date,
     history: validHistory,
-    note: "Trends are calculated from available daily source snapshots. Missing dates are not interpolated, and source counts are observations rather than confirmed registrar events.",
+    note: "Trends use available daily snapshots. Category counts are overlapping domain-name keyword signals, not verified website categories. Missing dates are not interpolated, and source counts are observations rather than confirmed registrar events.",
   };
 }
 
@@ -427,7 +462,7 @@ async function handleRequest(request, env, ctx) {
   if (url.pathname === "/") {
     return json({
       service: "TeamPeach Domain Intelligence API",
-      version: "1.1",
+      version: "1.2",
       status: "ready",
       endpoints: {
         health: "/v1/health",
