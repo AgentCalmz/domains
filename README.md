@@ -35,6 +35,7 @@ Endpoints:
 - `GET /v1/latest` — latest feed totals and TLD breakdowns
 - `GET /v1/summary` — alias for latest summary
 - `GET /v1/new-domains` — streams the latest compressed newly observed domain list for browser-side discovery; the Worker does not decompress or scan the full feed
+- `GET /v1/site-check?domain=example.com` — performs a cached, one-off reachability check for domains in the latest new-domain feed, returning a broad website status and available page title/description
 - `GET /v1/domain?domain=example.com` — exact domain lookup across the four feeds
 
 The Worker reads public GitHub Release assets and caches the immutable index shards. The API does not scan full domain lists.
@@ -42,6 +43,8 @@ The Worker reads public GitHub Release assets and caches the immutable index sha
 ## Data interpretation
 
 - A Webamon newly observed domain is not proof of its exact registrar creation date.
+- Website status checks run on demand, are cached for up to four hours, and are not part of the daily ingestion job.
+- Website status checks are lightweight reachability observations. They do not confirm an operating business, ownership, security, legitimacy or demand. Parked-page classification is heuristic.
 - A Webamon removed domain is not proof that it expired or is currently available to register.
 - WhoisFreaks expired and dropped feeds are distinct lifecycle signals. Its free public GitHub dataset is a limited subset, not a complete global feed.
 
