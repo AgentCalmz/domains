@@ -160,6 +160,185 @@ async function lookupDomain(domain, latest, ctx) {
   };
 }
 
+
+function isSafePublicDomain(domain) {
+  if (!domain || domain.length > 253) return false;
+  if (domain === "localhost" || domain.endsWith(".localhost") ||
+      domain.endsWith(".local") || domain.endsWith(".internal") ||
+      domain.endsWith(".test") || domain.endsWith(".invalid")) return false;
+  if (/^\\d{1,3}(?:\\.\\d{1,3}){3}$/.test(domain) || domain.includes(":")) return false;
+  return domain.includes(".") && domain.split(".").every((label) => label.length > 0);
+}
+
+function isSameSiteHost(hostname, rootDomain) {
+  const host = hostname.toLowerCase().replace(/\\.$/, "");
+  return host === rootDomain || host === `www.${rootDomain}` ||
+    (rootDomain.startsWith("www.") && host === rootDomain.slice(4));
+}
+
+async function readHtmlPrefix(response, maxBytes = 49152) {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const remaining = maxBytes - total;
+      const part = value.byteLength > remaining ? value.slice(0, remaining) : value;
+      chunks.push(part);
+      total += part.byteLength;
+      if (value.byteLength > remaining) break;
+    }
+  } finally {
+    try { await reader.cancel(); } catch {}
+  }
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(joined);
+}
+
+function decodeHtmlText(value) {
+  return String(value || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+function extractSiteMetadata(html) {
+  const titleMatch = html.match(/<title\\b[^>]*>([\\s\\S]{0,1000}?)<\\/title>/i);
+  let description = "";
+  const metaTags = html.match(/<meta\\b[^>]*>/gi) || [];
+  for (const tag of metaTags) {
+    if (!/\\bname\\s*=\\s*["']description["']/i.test(tag)) continue;
+    const value = tag.match(/\\bcontent\\s*=\\s*["']([^"']{0,1000})["']/i);
+    if (value) description = decodeHtmlText(value[1]);
+    break;
+  }
+  return {
+    title: decodeHtmlText(titleMatch && titleMatch[1] || ""),
+    description,
+  };
+}
+
+function parkedPageLikely(html, metadata) {
+  const sample = (metadata.title + " " + metadata.description + " " +
+    html.slice(0, 12000).replace(/<[^>]*>/g, " ")).toLowerCase();
+  return /domain (name )?(is )?for sale|buy this domain|make an offer for (this )?domain|domain parking|parked free|parkingcrew|afternic|sedo\\.com|hugedomains|dan\\.com|this domain may be for sale|domain is available for purchase/.test(sample);
+}
+
+async function requestSitePage(domain, protocol) {
+  let current = new URL(`${protocol}//${domain}/`);
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    if (!["https:", "http:"].includes(current.protocol) ||
+        current.username || current.password || current.port ||
+        !isSafePublicDomain(current.hostname)) {
+      return { status: "unreachable", status_label: "Unsafe or unsupported destination", http_status: null };
+    }
+    if (!isSameSiteHost(current.hostname, domain)) {
+      return {
+        status: "redirect",
+        status_label: "Redirects to another domain",
+        http_status: null,
+        final_url: current.href.slice(0, 500),
+      };
+    }
+
+    const response = await fetch(current.href, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+        "Range": "bytes=0-49151",
+        "User-Agent": "TeamPeach-Domain-Status/1.0 (+https://teampeach.org)",
+      },
+    });
+
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get("Location");
+      if (!location) {
+        return { status: "redirect", status_label: "Redirect response", http_status: response.status, final_url: current.href };
+      }
+      const target = new URL(location, current);
+      if (!["https:", "http:"].includes(target.protocol) || target.username || target.password || target.port ||
+          !isSafePublicDomain(target.hostname)) {
+        return { status: "redirect", status_label: "Redirects to an unsupported destination", http_status: response.status, final_url: target.href.slice(0, 500) };
+      }
+      if (!isSameSiteHost(target.hostname, domain)) {
+        return { status: "redirect", status_label: "Redirects to another domain", http_status: response.status, final_url: target.href.slice(0, 500) };
+      }
+      current = target;
+      continue;
+    }
+
+    const contentType = String(response.headers.get("Content-Type") || "").toLowerCase();
+    const html = contentType.includes("text/html") || contentType.includes("xhtml")
+      ? await readHtmlPrefix(response)
+      : "";
+    const metadata = extractSiteMetadata(html);
+    const base = { http_status: response.status, final_url: current.href.slice(0, 500), ...metadata };
+
+    if (parkedPageLikely(html, metadata)) {
+      return { ...base, status: "possibly_parked", status_label: "Possibly parked or for sale" };
+    }
+    if (response.status >= 200 && response.status < 400) {
+      return {
+        ...base,
+        status: protocol === "http:" ? "http_only" : "working",
+        status_label: protocol === "http:" ? "Responds over HTTP only" : "Website responds",
+      };
+    }
+    if ([401, 403, 407, 429].includes(response.status)) {
+      return { ...base, status: "access_restricted", status_label: "Responds, but access is restricted" };
+    }
+    if ([404, 410].includes(response.status)) {
+      return { ...base, status: "page_error", status_label: "Server responds, page not found" };
+    }
+    if (response.status >= 500) {
+      return { ...base, status: "server_error", status_label: "Website server error" };
+    }
+    return { ...base, status: "unreachable", status_label: "No usable website response" };
+  }
+  return { status: "redirect", status_label: "Too many redirects", http_status: null };
+}
+
+async function checkSite(domain) {
+  if (!isSafePublicDomain(domain)) {
+    return { status: "unreachable", status_label: "Unsupported domain format", http_status: null };
+  }
+  let httpsError = null;
+  try {
+    const result = await requestSitePage(domain, "https:");
+    if (result.status !== "unreachable" && result.status !== "server_error") return result;
+    httpsError = result;
+  } catch (error) {
+    httpsError = error;
+  }
+  try {
+    const httpResult = await requestSitePage(domain, "http:");
+    if (httpResult.status !== "unreachable" && httpResult.status !== "server_error") return httpResult;
+    return httpResult;
+  } catch {
+    return {
+      status: "unreachable",
+      status_label: "Website did not respond",
+      http_status: httpsError && httpsError.http_status || null,
+    };
+  }
+}
+
 async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
 
@@ -181,6 +360,7 @@ async function handleRequest(request, env, ctx) {
         latest: "/v1/latest",
         summary: "/v1/summary",
         new_domains: "/v1/new-domains",
+        site_check: "/v1/site-check?domain=example.com",
         domain_lookup: "/v1/domain?domain=example.com",
       },
     });
@@ -229,6 +409,43 @@ async function handleRequest(request, env, ctx) {
     const contentLength = asset.headers.get("Content-Length");
     if (contentLength) headers.set("Content-Length", contentLength);
     return new Response(asset.body, { status: 200, headers });
+  }
+
+
+  if (url.pathname === "/v1/site-check") {
+    let domain;
+    try {
+      domain = normalizeDomain(url.searchParams.get("domain"));
+    } catch (error) {
+      return json({ ok: false, error: error.message }, 400);
+    }
+    if (!isSafePublicDomain(domain)) {
+      return json({ ok: false, error: "Only public domain names can be checked." }, 400);
+    }
+
+    const cacheKey = new Request(`${url.origin}/__cache/site-check?domain=${encodeURIComponent(domain)}`);
+    const cache = caches.default;
+    const cached = await cache.match(cacheKey);
+    if (cached) return cached;
+
+    const latest = await getLatest(ctx);
+    const indexed = await lookupDomain(domain, latest, ctx);
+    if (!indexed.signals.includes("new_domains")) {
+      return json({ ok: false, error: "Only domains in the latest newly observed feed can be checked here." }, 404);
+    }
+
+    const result = await checkSite(domain);
+    const response = json({
+      ok: true,
+      domain,
+      snapshot_date: latest.latest.date,
+      checked_at: new Date().toISOString(),
+      ...result,
+      note: "This is a single automated reachability check, not a security scan or confirmation that an operating business exists.",
+    }, 200, { "Cache-Control": "public, max-age=14400" });
+
+    ctx.waitUntil(cache.put(cacheKey, response.clone()).catch(() => {}));
+    return response;
   }
 
   if (url.pathname === "/v1/domain" || url.pathname === "/v1/lookup") {
