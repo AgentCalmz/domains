@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backfill keyword-based category summaries into recent daily GitHub Releases."""
+"""Backfill name-based category counts into recent daily release summaries."""
 
 from __future__ import annotations
 
@@ -13,15 +13,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(__file__))
 from collect_domains import count_domain_categories
 
 API = "https://api.github.com"
 USER_AGENT = "TeamPeach-DomainIntelligence/1.0"
 
 
-def api_request(method: str, url: str, payload: bytes | None = None) -> dict | list:
-    token = os.environ["GITHUB_TOKEN"]
+def api_request(method: str, url: str, token: str, payload: bytes | None = None) -> dict | list:
     request = Request(
         url,
         data=payload,
@@ -55,9 +54,9 @@ def count_feed_categories(compressed: bytes) -> tuple[int, dict[str, int]]:
     return len(domains), count_domain_categories(domains)
 
 
-def upload_category_asset(upload_url: str, payload: bytes) -> None:
-    endpoint = upload_url.split("{", 1)[0] + "?" + urlencode({"name": "category-summary.json"})
-    api_request("POST", endpoint, payload)
+def upload_summary(upload_url: str, payload: bytes, token: str) -> None:
+    endpoint = upload_url.split("{", 1)[0] + "?" + urlencode({"name": "summary.json"})
+    api_request("POST", endpoint, token, payload)
 
 
 def main() -> int:
@@ -68,8 +67,11 @@ def main() -> int:
         return 1
 
     limit = max(1, min(100, int(os.getenv("CATEGORY_BACKFILL_LIMIT", "30"))))
-    release_url = f"{API}/repos/{repository}/releases?per_page=100"
-    releases = api_request("GET", release_url)
+    releases = api_request(
+        "GET",
+        f"{API}/repos/{repository}/releases?per_page=100",
+        token,
+    )
     if not isinstance(releases, list):
         raise RuntimeError("GitHub did not return a release list.")
 
@@ -84,39 +86,58 @@ def main() -> int:
     skipped = []
     errors = []
     for date, release in dated[:limit]:
-        assets = release.get("assets", [])
-        asset_by_name = {asset.get("name"): asset for asset in assets}
-        if "category-summary.json" in asset_by_name:
-            skipped.append(date)
-            continue
-
-        feed_asset = asset_by_name.get("new_domains.txt.gz")
+        assets = {asset.get("name"): asset for asset in release.get("assets", [])}
+        summary_asset = assets.get("summary.json")
+        feed_asset = assets.get("new_domains.txt.gz")
         upload_url = release.get("upload_url")
-        if not feed_asset or not upload_url:
-            errors.append({"date": date, "error": "Required release asset or upload URL is missing."})
+        if not summary_asset or not feed_asset or not upload_url:
+            errors.append({"date": date, "error": "A required daily release asset is missing."})
             continue
 
         try:
-            compressed = download_public_asset(feed_asset["browser_download_url"])
-            domain_count, by_category = count_feed_categories(compressed)
-            document = {
-                "schema_version": 1,
-                "date": date,
-                "domain_count": domain_count,
-                "method": "Overlapping keyword signals from domain names; not verified website classifications.",
-                "by_category": by_category,
-            }
-            upload_category_asset(
-                upload_url,
-                (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            original_summary = download_public_asset(summary_asset["browser_download_url"])
+            summary = json.loads(original_summary.decode("utf-8"))
+            new_source = summary.get("sources", {}).get("new_domains", {})
+            if new_source.get("by_category"):
+                skipped.append(date)
+                continue
+
+            compressed_feed = download_public_asset(feed_asset["browser_download_url"])
+            domain_count, by_category = count_feed_categories(compressed_feed)
+            new_source["by_category"] = by_category
+            new_source["category_method"] = (
+                "Overlapping keyword signals from domain names; not verified website classifications."
             )
+            summary["sources"]["new_domains"] = new_source
+            updated_summary = (json.dumps(summary, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+            # Replace only the JSON summary asset. If uploading the new summary
+            # fails, restore the exact original bytes so the daily release stays usable.
+            api_request(
+                "DELETE",
+                f"{API}/repos/{repository}/releases/assets/{summary_asset['id']}",
+                token,
+            )
+            try:
+                upload_summary(upload_url, updated_summary, token)
+            except Exception:
+                try:
+                    upload_summary(upload_url, original_summary, token)
+                except Exception as restore_error:
+                    errors.append({
+                        "date": date,
+                        "error": "Summary upload and rollback both failed: " + str(restore_error)[:180],
+                    })
+                    continue
+                raise
+
             updated.append({"date": date, "domains_scanned": domain_count, "categories": len(by_category)})
         except (HTTPError, URLError, TimeoutError, OSError, ValueError, RuntimeError) as error:
             errors.append({"date": date, "error": str(error)[:240]})
 
     print(json.dumps({"updated": updated, "already_present": skipped, "errors": errors}, indent=2))
     # Category summaries are an optional analytics layer; a partial backfill
-    # must never fail or invalidate the primary daily domain-data publication.
+    # must never invalidate the primary domain-data publication.
     return 0
 
 
