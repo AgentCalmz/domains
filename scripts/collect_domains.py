@@ -332,6 +332,7 @@ def main() -> int:
     required_failures: list[str] = []
     optional_failures: list[str] = []
     source_domain_sets: dict[str, list[str]] = {}
+    new_domain_category_counts: dict[str, int] = {}
 
     for key, config in SOURCES.items():
         record = {
@@ -365,7 +366,8 @@ def main() -> int:
                 }
             )
             if key == "new_domains":
-                record["by_category"] = count_domain_categories(domains)
+                new_domain_category_counts = count_domain_categories(domains)
+                record["by_category"] = new_domain_category_counts
                 record["category_method"] = "Overlapping keyword signals from domain names; not verified website classifications."
             summary["counts"][key] = len(domains)
         except Exception as exc:
@@ -400,6 +402,18 @@ def main() -> int:
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if new_domain_category_counts:
+        category_summary = {
+            "schema_version": 1,
+            "date": run_date,
+            "domain_count": summary["counts"].get("new_domains", 0),
+            "method": "Overlapping keyword signals from domain names; not verified website classifications.",
+            "by_category": new_domain_category_counts,
+        }
+        (snapshot_dir / "category-summary.json").write_text(
+            json.dumps(category_summary, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     latest = {
         "schema_version": 1,
         "date": run_date,
