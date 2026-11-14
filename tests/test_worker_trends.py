@@ -20,6 +20,13 @@ class WorkerTrendEndpointTests(unittest.TestCase):
         self.assertIn('requested_days', self.worker)
         self.assertIn('available_days', self.worker)
 
+
+    def test_latest_summary_falls_back_to_dated_releases(self):
+        self.assertIn("async function listDatedReleases()", self.worker)
+        self.assertIn("async function getLatestFromDatedReleases(pointerError)", self.worker)
+        self.assertIn("return getLatestFromDatedReleases(error)", self.worker)
+        self.assertIn("releases.slice(0, 5)", self.worker)
+
     def test_history_does_not_invent_missing_daily_counts(self):
         self.assertIn('history.filter(Boolean)', self.worker)
         self.assertIn('Missing dates are not interpolated', self.worker)
