@@ -62,6 +62,100 @@ USER_AGENT = "TeamPeach-DomainIntelligence/0.1 (+https://teampeach.org)"
 SOURCE_FLAGS = {"new_domains": 1, "removed_domains": 2, "whoisfreaks_expired": 4, "whoisfreaks_dropped": 8}
 LOOKUP_BUCKETS = 256
 
+CATEGORY_GROUPS = {
+    "AI & machine learning": (
+        "artificialintelligence", "machinelearning", "generativeai", "genai",
+        "aiplatform", "aiassistant", "aiagent", "aibot", "chatbot", "chatbots",
+        "llm", "neural", "promptengineering", "ai",
+    ),
+    "Software & SaaS": (
+        "software", "saas", "platform", "cloud", "api", "developer",
+        "development", "coding", "code", "crm", "erp", "hosting", "webdesign",
+        "website", "technology", "tech", "app", "apps",
+    ),
+    "Cybersecurity & IT": (
+        "cybersecurity", "cyber", "infosec", "security", "secure", "firewall",
+        "antivirus", "malware", "privacy", "vpn", "encryption", "identity",
+    ),
+    "Business & professional services": (
+        "business", "consulting", "consultant", "consultancy", "agency",
+        "agencies", "accounting", "accountant", "legal", "lawyer", "law",
+        "advisory", "management", "recruitment", "staffing", "outsourcing",
+        "corporate", "enterprise", "enterprises",
+    ),
+    "E-commerce & retail": (
+        "ecommerce", "ecom", "retail", "shopping", "shop", "shops", "store",
+        "stores", "marketplace", "market", "fashion", "boutique", "commerce",
+        "wholesale",
+    ),
+    "Finance & fintech": (
+        "fintech", "finance", "financial", "bank", "banking", "payment",
+        "payments", "wallet", "credit", "loan", "lending", "insurance",
+        "investment", "investing", "capital", "accounting",
+    ),
+    "Crypto & blockchain": (
+        "crypto", "cryptocurrency", "blockchain", "bitcoin", "ethereum",
+        "web3", "defi", "token", "tokens", "nft",
+    ),
+    "Healthcare & wellness": (
+        "healthcare", "health", "medical", "clinic", "clinics", "hospital",
+        "doctor", "dental", "dentist", "pharma", "pharmacy", "wellness",
+        "fitness", "diagnostic", "laboratory", "therapy",
+    ),
+    "Education & learning": (
+        "education", "school", "schools", "academy", "academies", "college",
+        "university", "learning", "training", "tutor", "course", "courses",
+        "elearning", "edtech",
+    ),
+    "Real estate & construction": (
+        "construction", "contractor", "building", "builder", "civil",
+        "engineering", "cement", "concrete", "architect", "property",
+        "properties", "realty", "realestate", "estate", "housing", "mortgage",
+    ),
+    "Energy & sustainability": (
+        "energy", "solar", "renewable", "sustainability", "sustainable",
+        "battery", "petroleum", "oilfield", "drilling", "offshore", "pipeline",
+        "refinery", "fuel", "climate", "greenenergy",
+    ),
+    "Agriculture & agribusiness": (
+        "agriculture", "agricultural", "agribusiness", "farming", "farm",
+        "farms", "livestock", "poultry", "dairy", "irrigation", "crops",
+        "agro", "seeds", "tractor", "harvest", "fertilizer",
+    ),
+    "Food & hospitality": (
+        "food", "catering", "hotel", "hotels", "restaurant", "restaurants",
+        "hospitality", "tourism", "resort", "resorts", "cafe", "coffee",
+        "bakery", "kitchen", "chef",
+    ),
+    "Logistics & transport": (
+        "logistics", "transport", "transportation", "freight", "cargo",
+        "shipping", "delivery", "courier", "dispatch", "warehouse",
+        "warehousing", "haulage", "trucking", "fleet",
+    ),
+    "Media & marketing": (
+        "marketing", "media", "advertising", "advert", "branding", "brand",
+        "content", "creative", "design", "studio", "video", "podcast",
+        "socialmedia", "seo", "publicrelations",
+    ),
+    "Automotive & mobility": (
+        "automotive", "vehicle", "vehicles", "motor", "motors", "garage",
+        "mechanic", "auto", "cars", "carparts", "spareparts", "mobility",
+    ),
+    "Gaming & entertainment": (
+        "gaming", "games", "game", "esports", "entertainment", "music",
+        "cinema", "streaming", "arcade", "animation", "events", "sports",
+    ),
+    "Beauty & lifestyle": (
+        "beauty", "salon", "spa", "barber", "hair", "skincare", "cosmetics",
+        "nails", "lifestyle", "fashion",
+    ),
+    "Nonprofit & community": (
+        "charity", "foundation", "nonprofit", "ngo", "community", "volunteer",
+        "donation", "socialimpact", "association",
+    ),
+}
+
+
 
 def normalize_domain(value: str) -> str | None:
     """Return a lowercase ASCII domain name, or None for invalid input."""
@@ -187,6 +281,28 @@ def build_lookup_shards(source_domain_sets: dict[str, list[str]]) -> tuple[list[
     return shards, len(flags_by_domain)
 
 
+def count_domain_categories(domains: list[str]) -> dict[str, int]:
+    """Count unique domains carrying transparent, overlapping name-based category clues."""
+    totals: Counter[str] = Counter()
+    for domain in domains:
+        name = domain.split(".", 1)[0].lower()
+        parts = set(re.findall(r"[a-z0-9]+", name))
+        compact = re.sub(r"[^a-z0-9]", "", name)
+        for category, terms in CATEGORY_GROUPS.items():
+            matched = any(
+                term in parts or (len(term) >= 5 and term in compact)
+                for term in terms
+            )
+            if not matched and category == "AI & machine learning":
+                matched = bool(re.search(
+                    r"^ai(?:assistant|agent|bot|platform|tools?|app|model|writer|chat|image|video|data|search)",
+                    compact,
+                ))
+            if matched:
+                totals[category] += 1
+    return dict(sorted(totals.items()))
+
+
 def main() -> int:
     output_root = Path(os.getenv("OUTPUT_DIR", "output"))
     if output_root.exists():
@@ -248,6 +364,9 @@ def main() -> int:
                     "sha256": digest,
                 }
             )
+            if key == "new_domains":
+                record["by_category"] = count_domain_categories(domains)
+                record["category_method"] = "Overlapping keyword signals from domain names; not verified website classifications."
             summary["counts"][key] = len(domains)
         except Exception as exc:
             record.update({"status": "failed", "error": str(exc)})
