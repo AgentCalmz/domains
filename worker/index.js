@@ -419,12 +419,13 @@ async function handleRequest(request, env, ctx) {
   if (url.pathname === "/") {
     return json({
       service: "TeamPeach Domain Intelligence API",
-      version: "1.0",
+      version: "1.1",
       status: "ready",
       endpoints: {
         health: "/v1/health",
         latest: "/v1/latest",
         summary: "/v1/summary",
+        trends: "/v1/trends?days=30",
         new_domains: "/v1/new-domains",
         site_check: "/v1/site-check?domain=example.com",
         domain_lookup: "/v1/domain?domain=example.com",
