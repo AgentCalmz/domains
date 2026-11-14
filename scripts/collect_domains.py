@@ -285,7 +285,7 @@ def count_domain_categories(domains: list[str]) -> dict[str, int]:
     """Count unique domains carrying transparent, overlapping name-based category clues."""
     totals: Counter[str] = Counter()
     for domain in domains:
-        name = domain.split(".", 1)[0].lower()
+        name = domain.rsplit(".", 1)[0].lower()
         parts = set(re.findall(r"[a-z0-9]+", name))
         compact = re.sub(r"[^a-z0-9]", "", name)
         for category, terms in CATEGORY_GROUPS.items():
