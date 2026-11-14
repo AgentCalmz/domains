@@ -176,7 +176,7 @@ function isSameSiteHost(hostname, rootDomain) {
     (rootDomain.startsWith("www.") && host === rootDomain.slice(4));
 }
 
-async function readHtmlPrefix(response, maxBytes = 49152) {
+async function readHtmlPrefix(response, maxBytes = 131072) {
   if (!response.body) return "";
   const reader = response.body.getReader();
   const chunks = [];
@@ -203,7 +203,7 @@ async function readHtmlPrefix(response, maxBytes = 49152) {
   return new TextDecoder("utf-8", { fatal: false }).decode(joined);
 }
 
-function decodeHtmlText(value) {
+function decodeHtmlText(value, maxLength = 8000) {
   return String(value || "")
     .replace(/<[^>]*>/g, " ")
     .replace(/&nbsp;|&#160;/gi, " ")
@@ -214,7 +214,7 @@ function decodeHtmlText(value) {
     .replace(/&gt;/gi, ">")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 500);
+    .slice(0, Math.max(0, Number(maxLength) || 0));
 }
 
 function extractSiteMetadata(html) {
@@ -223,23 +223,29 @@ function extractSiteMetadata(html) {
   const metaTags = html.match(/<meta\b[^>]*>/gi) || [];
   for (const tag of metaTags) {
     if (!/\bname\s*=\s*["']description["']/i.test(tag)) continue;
-    const value = tag.match(/\bcontent\s*=\s*["']([^"']{0,1000})["']/i);
-    if (value) description = decodeHtmlText(value[1]);
+    const value = tag.match(/\bcontent\s*=\s*["']([^"']{0,2000})["']/i);
+    if (value) description = decodeHtmlText(value[1], 1500);
     break;
   }
-  const pageText = decodeHtmlText(
-    html
-      .replace(/<!--[\s\S]*?-->/g, " ")
-      .replace(/<(script|style|noscript|svg)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-  ).slice(0, 900);
+
+  // Return readable homepage copy, not scripts, styles, embedded frames or raw HTML.
+  // This gives Premium research meaningful context while bounding request size.
+  const visibleHtml = String(html || "")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|noscript|svg|template|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<(nav|footer)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<(?:br|\/p|\/div|\/li|\/section|\/article|\/h[1-6])\b[^>]*>/gi, " ")
+    .replace(/<[^>]+>/g, " ");
+  const pageContent = decodeHtmlText(visibleHtml, 8000);
+
   return {
-    title: decodeHtmlText(titleMatch && titleMatch[1] || ""),
+    title: decodeHtmlText(titleMatch && titleMatch[1] || "", 300),
     description,
-    text_excerpt: pageText,
+    text_excerpt: pageContent.slice(0, 900),
+    page_content: pageContent,
+    page_content_truncated: pageContent.length >= 8000 || String(html || "").length >= 131072,
   };
 }
-
 function parkedPageLikely(html, metadata) {
   const sample = (metadata.title + " " + metadata.description + " " +
     html.slice(0, 12000).replace(/<[^>]*>/g, " ")).toLowerCase();
@@ -268,7 +274,7 @@ async function requestSitePage(domain, protocol) {
       redirect: "manual",
       headers: {
         "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
-        "Range": "bytes=0-49151",
+        "Range": "bytes=0-131071",
         "User-Agent": "TeamPeach-Domain-Status/1.0 (+https://teampeach.org)",
       },
     });
@@ -292,10 +298,10 @@ async function requestSitePage(domain, protocol) {
 
     const contentType = String(response.headers.get("Content-Type") || "").toLowerCase();
     const html = contentType.includes("text/html") || contentType.includes("xhtml")
-      ? await readHtmlPrefix(response)
+      ? await readHtmlPrefix(response, 131072)
       : "";
     const metadata = extractSiteMetadata(html);
-    const base = { http_status: response.status, final_url: current.href.slice(0, 500), ...metadata };
+    const base = { http_status: response.status, final_url: current.href.slice(0, 500), content_type: contentType.slice(0, 100), ...metadata };
 
     if (parkedPageLikely(html, metadata)) {
       return { ...base, status: "possibly_parked", status_label: "Possibly parked or for sale" };
