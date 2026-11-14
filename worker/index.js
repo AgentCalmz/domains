@@ -352,6 +352,59 @@ async function checkSite(domain) {
   }
 }
 
+async function loadTrendHistory(days) {
+  const releasesUrl = `https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`;
+  const releasesResponse = await cachedFetch(releasesUrl, 1800);
+  const releases = await releasesResponse.json();
+  const dated = (Array.isArray(releases) ? releases : [])
+    .map((release) => {
+      const match = String(release.tag_name || "").match(/^daily-(\\d{4}-\\d{2}-\\d{2})$/);
+      return match ? { date: match[1], tag: release.tag_name } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, days);
+
+  const history = await Promise.all(dated.map(async (release) => {
+    try {
+      const summaryUrl = `${RELEASES_BASE}/${release.tag}/summary.json`;
+      const summary = await getJson(summaryUrl, 3600);
+      const sources = summary.sources || {};
+      const counts = summary.counts || {};
+      return {
+        date: release.date,
+        status: summary.status || "unknown",
+        counts: {
+          new_domains: Number(counts.new_domains || 0),
+          removed_domains: Number(counts.removed_domains || 0),
+          whoisfreaks_expired: Number(counts.whoisfreaks_expired || 0),
+          whoisfreaks_dropped: Number(counts.whoisfreaks_dropped || 0),
+        },
+        by_tld: {
+          new_domains: sources.new_domains && sources.new_domains.by_tld || {},
+          removed_domains: sources.removed_domains && sources.removed_domains.by_tld || {},
+        },
+      };
+    } catch {
+      return null;
+    }
+  }));
+
+  const validHistory = history.filter(Boolean).sort((a, b) => a.date.localeCompare(b.date));
+  if (!validHistory.length) {
+    throw new Error("No published daily trend summaries are available yet.");
+  }
+
+  return {
+    ok: true,
+    requested_days: days,
+    available_days: validHistory.length,
+    latest_date: validHistory[validHistory.length - 1].date,
+    history: validHistory,
+    note: "Trends are calculated from available daily source snapshots. Missing dates are not interpolated, and source counts are observations rather than confirmed registrar events.",
+  };
+}
+
 async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
 
@@ -381,6 +434,13 @@ async function handleRequest(request, env, ctx) {
 
   if (url.pathname === "/v1/health") {
     return json({ ok: true, service: "teampeach-domain-api", status: "ready" });
+  }
+
+  if (url.pathname === "/v1/trends") {
+    const requested = Number(url.searchParams.get("days") || 30);
+    const days = [7, 14, 30].includes(requested) ? requested : 30;
+    const result = await loadTrendHistory(days);
+    return json(result, 200, { "Cache-Control": "public, max-age=1800, s-maxage=3600" });
   }
 
   if (url.pathname === "/v1/latest" || url.pathname === "/v1/summary") {
