@@ -402,18 +402,6 @@ def main() -> int:
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    if new_domain_category_counts:
-        category_summary = {
-            "schema_version": 1,
-            "date": run_date,
-            "domain_count": summary["counts"].get("new_domains", 0),
-            "method": "Overlapping keyword signals from domain names; not verified website classifications.",
-            "by_category": new_domain_category_counts,
-        }
-        (snapshot_dir / "category-summary.json").write_text(
-            json.dumps(category_summary, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
     latest = {
         "schema_version": 1,
         "date": run_date,
