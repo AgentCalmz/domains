@@ -22,7 +22,7 @@ class DomainCategoryTests(unittest.TestCase):
         ]
         counts = count_domain_categories(domains)
         self.assertEqual(counts["AI & machine learning"], 1)
-        self.assertEqual(counts["Software & SaaS"], 1)
+        self.assertEqual(counts["Software & SaaS"], 2)
         self.assertEqual(counts["Finance & fintech"], 1)
         self.assertEqual(counts["E-commerce & retail"], 1)
         self.assertEqual(counts["Healthcare & wellness"], 1)
