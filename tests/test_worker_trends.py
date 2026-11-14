@@ -14,14 +14,14 @@ class WorkerTrendEndpointTests(unittest.TestCase):
 
     def test_history_uses_dated_daily_release_summaries(self):
         self.assertIn('/releases?per_page=100', self.worker)
-        self.assertIn('daily-(\\\\d{4}-\\\\d{2}-\\\\d{2})', self.worker)
+        self.assertIn(r'daily-(\\d{4}-\\d{2}-\\d{2})', self.worker)
         self.assertIn('summary.sources', self.worker)
         self.assertIn('by_tld', self.worker)
         self.assertIn('requested_days', self.worker)
         self.assertIn('available_days', self.worker)
 
     def test_history_does_not_invent_missing_daily_counts(self):
-        self.assertIn('validHistory.filter(Boolean)', self.worker)
+        self.assertIn('history.filter(Boolean)', self.worker)
         self.assertIn('Missing dates are not interpolated', self.worker)
 
 
