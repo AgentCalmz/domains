@@ -362,10 +362,18 @@ async function loadTrendHistory(days) {
       return match ? { date: match[1], tag: release.tag_name } : null;
     })
     .filter(Boolean)
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, days);
+    .sort((a, b) => b.date.localeCompare(a.date));
 
-  const history = await Promise.all(dated.map(async (release) => {
+  // Anchor the lookback to the newest published snapshot, not the worker's
+  // wall-clock date, so a delayed daily release does not create an empty chart.
+  const newestDate = dated[0] && dated[0].date;
+  const newestTimestamp = newestDate ? Date.parse(newestDate + "T00:00:00Z") : NaN;
+  const cutoff = Number.isFinite(newestTimestamp)
+    ? new Date(newestTimestamp - (days - 1) * 86400000).toISOString().slice(0, 10)
+    : "";
+  const selectedReleases = dated.filter((release) => !cutoff || release.date >= cutoff).slice(0, days);
+
+  const history = await Promise.all(selectedReleases.map(async (release) => {
     try {
       const summaryUrl = `${RELEASES_BASE}/${release.tag}/summary.json`;
       const summary = await getJson(summaryUrl, 3600);
