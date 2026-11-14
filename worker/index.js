@@ -227,9 +227,16 @@ function extractSiteMetadata(html) {
     if (value) description = decodeHtmlText(value[1]);
     break;
   }
+  const pageText = decodeHtmlText(
+    html
+      .replace(/<!--[\\s\\S]*?-->/g, " ")
+      .replace(/<(script|style|noscript|svg)\\b[^>]*>[\\s\\S]*?<\\/\\1>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+  ).slice(0, 900);
   return {
     title: decodeHtmlText(titleMatch && titleMatch[1] || ""),
     description,
+    text_excerpt: pageText,
   };
 }
 
