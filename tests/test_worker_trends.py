@@ -14,7 +14,7 @@ class WorkerTrendEndpointTests(unittest.TestCase):
 
     def test_history_uses_dated_daily_release_summaries(self):
         self.assertIn('/releases?per_page=100', self.worker)
-        self.assertIn(r'daily-(\\d{4}-\\d{2}-\\d{2})', self.worker)
+        self.assertIn(r'daily-(\d{4}-\d{2}-\d{2})', self.worker)
         self.assertIn('summary.sources', self.worker)
         self.assertIn('by_tld', self.worker)
         self.assertIn('requested_days', self.worker)
