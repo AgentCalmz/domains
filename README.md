@@ -34,6 +34,7 @@ Endpoints:
 - `GET /v1/health` — health check
 - `GET /v1/latest` — latest feed totals and TLD breakdowns
 - `GET /v1/summary` — alias for latest summary
+- `GET /v1/trends?days=30` — returns available dated snapshot counts and per-TLD breakdowns for 7, 14 or 30 day trend analysis
 - `GET /v1/new-domains` — streams the latest compressed newly observed domain list for browser-side discovery; the Worker does not decompress or scan the full feed
 - `GET /v1/site-check?domain=example.com` — performs a cached reachability check for domains in the latest new-domain feed, returning website status, page title/description and up to 8,000 characters of extracted visible homepage text (not raw HTML)
 - `GET /v1/domain?domain=example.com` — exact domain lookup across the four feeds
