@@ -462,7 +462,7 @@ async function handleRequest(request, env, ctx) {
   if (url.pathname === "/") {
     return json({
       service: "TeamPeach Domain Intelligence API",
-      version: "1.2",
+      version: "1.3",
       status: "ready",
       endpoints: {
         health: "/v1/health",
@@ -470,6 +470,7 @@ async function handleRequest(request, env, ctx) {
         summary: "/v1/summary",
         trends: "/v1/trends?days=30",
         new_domains: "/v1/new-domains",
+        revival_domains: "/v1/revival-domains?source=dropped",
         site_check: "/v1/site-check?domain=example.com",
         domain_lookup: "/v1/domain?domain=example.com",
       },
@@ -528,6 +529,54 @@ async function handleRequest(request, env, ctx) {
     return new Response(asset.body, { status: 200, headers });
   }
 
+
+
+  if (url.pathname === "/v1/revival-domains") {
+    const source = String(url.searchParams.get("source") || "dropped").toLowerCase();
+    const sourceConfig = {
+      expired: { key: "whoisfreaks_expired", file: "whoisfreaks_expired.txt.gz" },
+      dropped: { key: "whoisfreaks_dropped", file: "whoisfreaks_dropped.txt.gz" },
+      removed: { key: "removed_domains", file: "removed_domains.txt.gz" },
+    }[source];
+
+    if (!sourceConfig) {
+      return json({
+        ok: false,
+        error: "Choose one lifecycle source: expired, dropped or removed.",
+      }, 400);
+    }
+
+    const { latest, summary, tag } = await getLatest(ctx);
+    const sourceSummary = summary.sources?.[sourceConfig.key];
+    if (sourceSummary?.status !== "success") {
+      return json({
+        ok: false,
+        source,
+        snapshot_date: latest.date,
+        error: "This lifecycle dataset is not available in the latest published snapshot.",
+        detail: sourceSummary?.error || "The source did not publish a usable dataset.",
+      }, 503);
+    }
+
+    const assetUrl = `${RELEASES_BASE}/${tag}/${sourceConfig.file}`;
+    const asset = await cachedFetch(assetUrl, 86400);
+    if (!asset.body) {
+      throw new Error("The selected lifecycle dataset is empty.");
+    }
+
+    const headers = new Headers({
+      ...CORS_HEADERS,
+      "Content-Type": "application/gzip",
+      "Cache-Control": "public, max-age=3600, s-maxage=86400",
+      "Access-Control-Expose-Headers": "X-Snapshot-Date, X-Domain-Count, X-Domain-Source",
+      "X-Snapshot-Date": latest.date,
+      "X-Domain-Count": String(summary.counts?.[sourceConfig.key] || 0),
+      "X-Domain-Source": source,
+    });
+    const contentLength = asset.headers.get("Content-Length");
+    if (contentLength) headers.set("Content-Length", contentLength);
+    return new Response(asset.body, { status: 200, headers });
+  }
 
   if (url.pathname === "/v1/site-check") {
     let domain;
