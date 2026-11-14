@@ -358,7 +358,7 @@ async function loadTrendHistory(days) {
   const releases = await releasesResponse.json();
   const dated = (Array.isArray(releases) ? releases : [])
     .map((release) => {
-      const match = String(release.tag_name || "").match(/^daily-(\\d{4}-\\d{2}-\\d{2})$/);
+      const match = String(release.tag_name || "").match(/^daily-(\d{4}-\d{2}-\d{2})$/);
       return match ? { date: match[1], tag: release.tag_name } : null;
     })
     .filter(Boolean)
