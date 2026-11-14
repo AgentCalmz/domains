@@ -35,7 +35,7 @@ Endpoints:
 - `GET /v1/latest` — latest feed totals and TLD breakdowns
 - `GET /v1/summary` — alias for latest summary
 - `GET /v1/new-domains` — streams the latest compressed newly observed domain list for browser-side discovery; the Worker does not decompress or scan the full feed
-- `GET /v1/site-check?domain=example.com` — performs a cached, one-off reachability check for domains in the latest new-domain feed, returning a broad website status and available page title/description
+- `GET /v1/site-check?domain=example.com` — performs a cached reachability check for domains in the latest new-domain feed, returning website status, page title/description and up to 8,000 characters of extracted visible homepage text (not raw HTML)
 - `GET /v1/domain?domain=example.com` — exact domain lookup across the four feeds
 
 The Worker reads public GitHub Release assets and caches the immutable index shards. The API does not scan full domain lists.
@@ -43,8 +43,8 @@ The Worker reads public GitHub Release assets and caches the immutable index sha
 ## Data interpretation
 
 - A Webamon newly observed domain is not proof of its exact registrar creation date.
-- Website status checks run on demand, are cached for up to four hours, and are not part of the daily ingestion job.
-- Website status checks are lightweight reachability observations. They do not confirm an operating business, ownership, security, legitimacy or demand. Parked-page classification is heuristic.
+- Website status checks are requested by the browser for the 30 visible domains on the current page, with at most two checks running concurrently. Recent results are cached in the visitor browser and at the Worker for up to four hours; these checks are not part of the daily ingestion job.
+- Website status checks are lightweight homepage reachability and content observations. The Worker reads at most the first 128 KiB of the homepage response, extracts a bounded plain-text sample, and excludes scripts/styles/navigation/footer markup. They do not crawl the rest of the site or confirm an operating business, ownership, security, legitimacy or demand. Parked-page classification is heuristic.
 - A Webamon removed domain is not proof that it expired or is currently available to register.
 - WhoisFreaks expired and dropped feeds are distinct lifecycle signals. Its free public GitHub dataset is a limited subset, not a complete global feed.
 
