@@ -5,7 +5,33 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from collect_domains import build_lookup_shards, normalize_domain, parse_domains
+from collect_domains import build_lookup_shards, count_domain_categories, normalize_domain, parse_domains
+
+
+
+class DomainCategoryTests(unittest.TestCase):
+    def test_counts_broad_name_based_website_categories(self):
+        domains = [
+            "aiplatform.ai",
+            "cloudsaas.io",
+            "fintechwallet.com",
+            "marketplace.store",
+            "cliniccare.ng",
+            "solarenergy.africa",
+            "agribusiness.org",
+        ]
+        counts = count_domain_categories(domains)
+        self.assertEqual(counts["AI & machine learning"], 1)
+        self.assertEqual(counts["Software & SaaS"], 2)
+        self.assertEqual(counts["Finance & fintech"], 1)
+        self.assertEqual(counts["E-commerce & retail"], 1)
+        self.assertEqual(counts["Healthcare & wellness"], 1)
+        self.assertEqual(counts["Energy & sustainability"], 1)
+        self.assertEqual(counts["Agriculture & agribusiness"], 1)
+
+    def test_category_counts_are_unique_per_domain_and_can_overlap(self):
+        counts = count_domain_categories(["solarenergy.com", "solarenergy.com"])
+        self.assertEqual(counts["Energy & sustainability"], 1)
 
 
 class DomainNormalizationTests(unittest.TestCase):

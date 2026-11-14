@@ -51,3 +51,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python scripts/publish_release.py
+
+      - name: Backfill category summaries for recent daily snapshots
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CATEGORY_BACKFILL_LIMIT: "30"
+        run: python scripts/backfill_category_history.py
