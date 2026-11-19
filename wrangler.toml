@@ -1,0 +1,10 @@
+name = "teampeach-domain-api"
+main = "worker/index.js"
+compatibility_date = "2026-11-19"
+workers_dev = true
+
+[[d1_databases]]
+binding = "JOBS_DB"
+database_name = "teampeach-jobs"
+database_id = "REPLACE_WITH_TEAMPEACH_JOBS_D1_ID"
+migrations_dir = "jobs/migrations"

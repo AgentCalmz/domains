@@ -11,8 +11,8 @@ const SOURCE_FLAGS = [
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -26,6 +26,188 @@ function json(data, status = 200, extraHeaders = {}) {
       ...extraHeaders,
     },
   });
+}
+
+
+const JOB_ATS = new Set(["ashby", "greenhouse", "lever"]);
+const JOB_BATCH_LIMIT = 250;
+const JOB_RETENTION_DAYS = 45;
+
+function jobText(value, max = 500) {
+  return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function jobIso(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function jobAdmin(request, env) {
+  const token = env.JOBS_INGEST_TOKEN;
+  return !!token && request.headers.get("Authorization") === "Bearer " + token;
+}
+
+async function handleJobRoutes(request, url, env) {
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  if (url.pathname === "/v1/jobs/health" && request.method === "GET") {
+    if (!env.JOBS_DB) return json({ ok: false, service: "teampeach-jobs", error: "JOBS_DB binding is not configured." }, 503);
+    const row = await env.JOBS_DB.prepare("SELECT COUNT(*) AS total FROM jobs").first();
+    return json({ ok: true, service: "teampeach-jobs", database: "ready", total: Number(row?.total || 0), window_days: 30 });
+  }
+
+  if (url.pathname === "/v1/jobs/stats" && request.method === "GET") {
+    if (!env.JOBS_DB) return json({ ok: false, error: "Jobs database is not configured." }, 503);
+    const cutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
+    const [jobs, companies, newest, run] = await Promise.all([
+      env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE published_at >= ? AND status != 'closed'").bind(cutoff).first(),
+      env.JOBS_DB.prepare("SELECT COUNT(DISTINCT company) AS n FROM jobs WHERE published_at >= ? AND status != 'closed'").bind(cutoff).first(),
+      env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE first_seen_at >= ?").bind(new Date(now.getTime() - 86400000).toISOString()).first(),
+      env.JOBS_DB.prepare("SELECT * FROM job_collection_runs ORDER BY id DESC LIMIT 1").first(),
+    ]);
+    return json({
+      ok: true, window_days: 30,
+      jobs: Number(jobs?.n || 0),
+      employers: Number(companies?.n || 0),
+      discovered_24h: Number(newest?.n || 0),
+      latest_collection: run || null,
+    }, 200, { "Cache-Control": "public, max-age=60, s-maxage=120" });
+  }
+
+  if (url.pathname === "/v1/jobs" && request.method === "GET") {
+    if (!env.JOBS_DB) return json({ ok: false, error: "Jobs database is not configured." }, 503);
+    const days = Math.max(1, Math.min(30, Number(url.searchParams.get("days") || 30)));
+    const page = Math.max(1, Math.min(10000, Number(url.searchParams.get("page") || 1)));
+    const limit = Math.max(1, Math.min(50, Number(url.searchParams.get("limit") || 20)));
+    const q = jobText(url.searchParams.get("q"), 100).toLowerCase();
+    const location = jobText(url.searchParams.get("location") || url.searchParams.get("country"), 100).toLowerCase();
+    const remote = jobText(url.searchParams.get("remote"), 20).toLowerCase();
+    const type = jobText(url.searchParams.get("type"), 50).toLowerCase();
+    const where = ["published_at >= ?", "status != 'closed'"];
+    const params = [new Date(now.getTime() - days * 86400000).toISOString()];
+    if (q) {
+      where.push("lower(title || ' ' || company || ' ' || location || ' ' || department || ' ' || team) LIKE ?");
+      params.push("%" + q + "%");
+    }
+    if (location) {
+      where.push("lower(location) LIKE ?");
+      params.push("%" + location + "%");
+    }
+    if (remote && remote !== "any") {
+      where.push("remote_status = ?");
+      params.push(remote);
+    }
+    if (type) {
+      where.push("lower(employment_type) LIKE ?");
+      params.push("%" + type + "%");
+    }
+    const clause = where.join(" AND ");
+    const count = await env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE " + clause).bind(...params).first();
+    const query = "SELECT ats, board_key, external_id, company, title, department, team, employment_type, location, remote_status, published_at, first_seen_at, last_seen_at, status, job_url, apply_url, source_url FROM jobs WHERE " + clause + " ORDER BY published_at DESC, last_seen_at DESC LIMIT ? OFFSET ?";
+    const result = await env.JOBS_DB.prepare(query).bind(...params, limit, (page - 1) * limit).all();
+    return json({
+      ok: true,
+      days,
+      total: Number(count?.n || 0),
+      page,
+      limit,
+      has_more: page * limit < Number(count?.n || 0),
+      results: result.results || [],
+    }, 200, { "Cache-Control": "public, max-age=30, s-maxage=60" });
+  }
+
+  if (url.pathname.startsWith("/v1/ingest/")) {
+    if (!jobAdmin(request, env)) return json({ ok: false, error: "Unauthorized job ingestion request." }, 401);
+    if (!env.JOBS_DB) return json({ ok: false, error: "JOBS_DB binding is not configured." }, 503);
+
+    if (url.pathname === "/v1/ingest/boards" && request.method === "GET") {
+      const result = await env.JOBS_DB.prepare("SELECT ats, board_key, company, source_url FROM job_boards WHERE active = 1 ORDER BY ats, board_key").all();
+      return json({ ok: true, boards: result.results || [] });
+    }
+
+    if (url.pathname === "/v1/ingest/boards" && request.method === "POST") {
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON body." }, 400); }
+      const boards = Array.isArray(body?.boards) ? body.boards : [];
+      if (!boards.length || boards.length > JOB_BATCH_LIMIT) return json({ ok: false, error: "Send between 1 and 250 boards per batch." }, 400);
+      const statements = [];
+      for (const board of boards) {
+        const ats = jobText(board?.ats, 20).toLowerCase();
+        const slug = jobText(board?.board_key, 100);
+        const company = jobText(board?.company, 160);
+        const sourceUrl = jobText(board?.source_url, 1200);
+        if (!JOB_ATS.has(ats) || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}$/.test(slug) || !company || !sourceUrl.startsWith("https://")) continue;
+        statements.push(env.JOBS_DB.prepare(
+          "INSERT INTO job_boards(ats,board_key,company,source_url,first_seen_at,last_seen_at,last_checked_at,active) VALUES(?,?,?,?,?,?,?,1) " +
+          "ON CONFLICT(ats,board_key) DO UPDATE SET company=excluded.company,source_url=excluded.source_url,last_seen_at=excluded.last_seen_at,active=1"
+        ).bind(ats, slug, company, sourceUrl, nowIso, nowIso, nowIso));
+      }
+      for (let i = 0; i < statements.length; i += 80) await env.JOBS_DB.batch(statements.slice(i, i + 80));
+      return json({ ok: true, received: boards.length, registered: statements.length });
+    }
+
+    if (url.pathname === "/v1/ingest/jobs" && request.method === "POST") {
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON body." }, 400); }
+      const jobs = Array.isArray(body?.jobs) ? body.jobs : [];
+      if (!jobs.length || jobs.length > JOB_BATCH_LIMIT) return json({ ok: false, error: "Send between 1 and 250 jobs per batch." }, 400);
+      const cutoff = now.getTime() - 30 * 86400000;
+      const statements = [];
+      let rejected = 0;
+      for (const item of jobs) {
+        const ats = jobText(item?.ats, 20).toLowerCase();
+        const slug = jobText(item?.board_key, 100);
+        const externalId = jobText(item?.external_id, 160);
+        const company = jobText(item?.company, 160);
+        const title = jobText(item?.title, 240);
+        const published = jobIso(item?.published_at);
+        const jobUrl = jobText(item?.job_url, 1800);
+        const applyUrl = jobText(item?.apply_url || item?.job_url, 1800);
+        const sourceUrl = jobText(item?.source_url, 1200);
+        const location = jobText(item?.location, 300);
+        const remote = jobText(item?.remote_status || "unspecified", 20).toLowerCase();
+        if (!JOB_ATS.has(ats) || !slug || !externalId || !company || !title || !published ||
+            new Date(published).getTime() < cutoff || new Date(published).getTime() > now.getTime() + 86400000 ||
+            !jobUrl.startsWith("https://") || !applyUrl.startsWith("https://") ||
+            !sourceUrl.startsWith("https://") || !["remote", "hybrid", "onsite", "unspecified"].includes(remote)) {
+          rejected++;
+          continue;
+        }
+        statements.push(env.JOBS_DB.prepare(
+          "INSERT INTO jobs(ats,board_key,external_id,company,title,department,team,employment_type,location,remote_status,published_at,job_url,apply_url,source_url,first_seen_at,last_seen_at,status) " +
+          "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open') " +
+          "ON CONFLICT(ats,board_key,external_id) DO UPDATE SET company=excluded.company,title=excluded.title,department=excluded.department,team=excluded.team,employment_type=excluded.employment_type,location=excluded.location,remote_status=excluded.remote_status,published_at=excluded.published_at,job_url=excluded.job_url,apply_url=excluded.apply_url,source_url=excluded.source_url,last_seen_at=excluded.last_seen_at,status='open'"
+        ).bind(ats, slug, externalId, company, title,
+          jobText(item?.department, 120), jobText(item?.team, 120),
+          jobText(item?.employment_type, 100), location, remote, published,
+          jobUrl, applyUrl, sourceUrl, nowIso, nowIso));
+      }
+      for (let i = 0; i < statements.length; i += 80) await env.JOBS_DB.batch(statements.slice(i, i + 80));
+      await env.JOBS_DB.prepare("UPDATE jobs SET status='stale' WHERE status='open' AND last_seen_at < ?")
+        .bind(new Date(now.getTime() - 4 * 86400000).toISOString()).run();
+      await env.JOBS_DB.prepare("DELETE FROM jobs WHERE COALESCE(published_at,first_seen_at) < ?")
+        .bind(new Date(now.getTime() - JOB_RETENTION_DAYS * 86400000).toISOString()).run();
+      return json({ ok: true, accepted: statements.length, rejected, retention_days: JOB_RETENTION_DAYS });
+    }
+
+    if (url.pathname === "/v1/ingest/run" && request.method === "POST") {
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON body." }, 400); }
+      await env.JOBS_DB.prepare(
+        "INSERT INTO job_collection_runs(collected_at,boards_total,boards_succeeded,boards_with_errors,jobs_sent,days) VALUES(?,?,?,?,?,?)"
+      ).bind(jobIso(body?.collected_at) || nowIso,
+        Math.max(0, Number(body?.boards_total) || 0),
+        Math.max(0, Number(body?.boards_succeeded) || 0),
+        Math.max(0, Number(body?.boards_with_errors) || 0),
+        Math.max(0, Number(body?.jobs_sent) || 0), 30).run();
+      return json({ ok: true });
+    }
+
+    return json({ ok: false, error: "Unknown ingestion endpoint or method." }, 404);
+  }
+
+  return null;
 }
 
 async function cachedFetch(url, ttlSeconds) {
@@ -455,6 +637,9 @@ async function handleRequest(request, env, ctx) {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
+  const jobResponse = await handleJobRoutes(request, url, env);
+  if (jobResponse) return jobResponse;
+
   if (request.method !== "GET") {
     return json({ ok: false, error: "Only GET requests are supported." }, 405);
   }
@@ -466,6 +651,9 @@ async function handleRequest(request, env, ctx) {
       status: "ready",
       endpoints: {
         health: "/v1/health",
+        jobs_health: "/v1/jobs/health",
+        jobs_search: "/v1/jobs?q=software&days=30",
+        jobs_stats: "/v1/jobs/stats",
         latest: "/v1/latest",
         summary: "/v1/summary",
         trends: "/v1/trends?days=30",
