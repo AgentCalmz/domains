@@ -32,6 +32,9 @@ function json(data, status = 200, extraHeaders = {}) {
 const JOB_ATS = new Set(["ashby", "greenhouse", "lever"]);
 const JOB_BATCH_LIMIT = 250;
 const JOB_RETENTION_DAYS = 45;
+// Existing unchanged listings only refresh last_seen_at periodically. New or changed
+// postings are still written immediately, while four-hour scans avoid rewriting every row.
+const JOB_LAST_SEEN_REFRESH_HOURS = 22;
 
 function jobText(value, max = 500) {
   return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
@@ -153,6 +156,7 @@ async function handleJobRoutes(request, url, env) {
       const jobs = Array.isArray(body?.jobs) ? body.jobs : [];
       if (!jobs.length || jobs.length > JOB_BATCH_LIMIT) return json({ ok: false, error: "Send between 1 and 250 jobs per batch." }, 400);
       const cutoff = now.getTime() - 30 * 86400000;
+      const seenRefreshBefore = new Date(now.getTime() - JOB_LAST_SEEN_REFRESH_HOURS * 60 * 60 * 1000).toISOString();
       const statements = [];
       let rejected = 0;
       for (const item of jobs) {
@@ -177,11 +181,12 @@ async function handleJobRoutes(request, url, env) {
         statements.push(env.JOBS_DB.prepare(
           "INSERT INTO jobs(ats,board_key,external_id,company,title,department,team,employment_type,location,remote_status,published_at,job_url,apply_url,source_url,first_seen_at,last_seen_at,status) " +
           "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'open') " +
-          "ON CONFLICT(ats,board_key,external_id) DO UPDATE SET company=excluded.company,title=excluded.title,department=excluded.department,team=excluded.team,employment_type=excluded.employment_type,location=excluded.location,remote_status=excluded.remote_status,published_at=excluded.published_at,job_url=excluded.job_url,apply_url=excluded.apply_url,source_url=excluded.source_url,last_seen_at=excluded.last_seen_at,status='open'"
+          "ON CONFLICT(ats,board_key,external_id) DO UPDATE SET company=excluded.company,title=excluded.title,department=excluded.department,team=excluded.team,employment_type=excluded.employment_type,location=excluded.location,remote_status=excluded.remote_status,published_at=excluded.published_at,job_url=excluded.job_url,apply_url=excluded.apply_url,source_url=excluded.source_url,last_seen_at=excluded.last_seen_at,status='open' " +
+          "WHERE jobs.company != excluded.company OR jobs.title != excluded.title OR jobs.department != excluded.department OR jobs.team != excluded.team OR jobs.employment_type != excluded.employment_type OR jobs.location != excluded.location OR jobs.remote_status != excluded.remote_status OR jobs.published_at != excluded.published_at OR jobs.job_url != excluded.job_url OR jobs.apply_url != excluded.apply_url OR jobs.source_url != excluded.source_url OR jobs.status != 'open' OR jobs.last_seen_at < ?"
         ).bind(ats, slug, externalId, company, title,
           jobText(item?.department, 120), jobText(item?.team, 120),
           jobText(item?.employment_type, 100), location, remote, published,
-          jobUrl, applyUrl, sourceUrl, nowIso, nowIso));
+          jobUrl, applyUrl, sourceUrl, nowIso, nowIso, seenRefreshBefore));
       }
       for (let i = 0; i < statements.length; i += 80) await env.JOBS_DB.batch(statements.slice(i, i + 80));
       await env.JOBS_DB.prepare("UPDATE jobs SET status='stale' WHERE status='open' AND last_seen_at < ?")
