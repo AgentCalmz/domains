@@ -6,5 +6,5 @@ workers_dev = true
 [[d1_databases]]
 binding = "JOBS_DB"
 database_name = "teampeach-jobs"
-database_id = "REPLACE_WITH_TEAMPEACH_JOBS_D1_ID"
+database_id = "ddab04ae-33b0-4d86-aeee-c91867d5690c"
 migrations_dir = "jobs/migrations"
