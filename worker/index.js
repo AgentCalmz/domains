@@ -34,6 +34,7 @@ const JOB_BATCH_LIMIT = 250;
 const JOB_RETENTION_DAYS = 45;
 // Existing unchanged listings only refresh last_seen_at periodically. New or changed
 // postings are still written immediately, while four-hour scans avoid rewriting every row.
+// Keep the binding and D1 database ID in wrangler.toml as the deploy-time source of truth.
 const JOB_LAST_SEEN_REFRESH_HOURS = 22;
 
 function jobText(value, max = 500) {
