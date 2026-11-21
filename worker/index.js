@@ -90,13 +90,21 @@ async function handleJobRoutes(request, url, env) {
     const type = jobText(url.searchParams.get("type"), 50).toLowerCase();
     const where = ["published_at >= ?", "status != 'closed'"];
     const params = [new Date(now.getTime() - days * 86400000).toISOString()];
-    if (q) {
-      where.push("lower(title || ' ' || company || ' ' || location || ' ' || department || ' ' || team) LIKE ?");
-      params.push("%" + q + "%");
+
+    // Treat multi-word searches as terms, not one exact phrase. Every term must
+    // occur in at least one searchable field, so "data analyst" also finds
+    // "Analyst, Data" and "Lagos Nigeria" matches "Lagos, Nigeria".
+    const queryTokens = q.split(/[\s,]+/).filter(Boolean).slice(0, 8);
+    for (const token of queryTokens) {
+      const pattern = "%" + token + "%";
+      where.push("(lower(title) LIKE ? OR lower(company) LIKE ? OR lower(location) LIKE ? OR lower(department) LIKE ? OR lower(team) LIKE ?)");
+      params.push(pattern, pattern, pattern, pattern, pattern);
     }
-    if (location) {
+
+    const locationTokens = location.split(/[\s,]+/).filter(Boolean).slice(0, 5);
+    for (const token of locationTokens) {
       where.push("lower(location) LIKE ?");
-      params.push("%" + location + "%");
+      params.push("%" + token + "%");
     }
     if (remote && remote !== "any") {
       where.push("remote_status = ?");
