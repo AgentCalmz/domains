@@ -94,14 +94,14 @@ async function handleJobRoutes(request, url, env) {
     // Treat multi-word searches as terms, not one exact phrase. Every term must
     // occur in at least one searchable field, so "data analyst" also finds
     // "Analyst, Data" and "Lagos Nigeria" matches "Lagos, Nigeria".
-    const queryTokens = q.split(/[\\s,]+/).filter(Boolean).slice(0, 8);
+    const queryTokens = q.split(/[\s,]+/).filter(Boolean).slice(0, 8);
     for (const token of queryTokens) {
       const pattern = "%" + token + "%";
       where.push("(lower(title) LIKE ? OR lower(company) LIKE ? OR lower(location) LIKE ? OR lower(department) LIKE ? OR lower(team) LIKE ?)");
       params.push(pattern, pattern, pattern, pattern, pattern);
     }
 
-    const locationTokens = location.split(/[\\s,]+/).filter(Boolean).slice(0, 5);
+    const locationTokens = location.split(/[\s,]+/).filter(Boolean).slice(0, 5);
     for (const token of locationTokens) {
       where.push("lower(location) LIKE ?");
       params.push("%" + token + "%");
