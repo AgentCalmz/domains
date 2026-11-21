@@ -653,7 +653,8 @@ async function handleRequest(request, env, ctx) {
   if (url.pathname === "/") {
     return json({
       service: "TeamPeach Domain Intelligence API",
-      version: "1.3",
+      version: "1.4",
+      jobs_api_version: "1.0",
       status: "ready",
       endpoints: {
         health: "/v1/health",
