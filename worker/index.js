@@ -57,23 +57,29 @@ async function handleJobRoutes(request, url, env) {
 
   if (url.pathname === "/v1/jobs/health" && request.method === "GET") {
     if (!env.JOBS_DB) return json({ ok: false, service: "teampeach-jobs", error: "JOBS_DB binding is not configured." }, 503);
-    const row = await env.JOBS_DB.prepare("SELECT COUNT(*) AS total FROM jobs").first();
-    return json({ ok: true, service: "teampeach-jobs", database: "ready", total: Number(row?.total || 0), window_days: 30 });
+    const result = await env.JOBS_DB.prepare("SELECT COUNT(*) AS total FROM jobs").all();
+    const meta = result.meta || {};
+    return json({
+      ok: true, service: "teampeach-jobs", database: "ready",
+      total: Number(result.results?.[0]?.total || 0), window_days: 30,
+      database_size_bytes: Number(meta.size_after || 0),
+      rows_read: Number(meta.rows_read || 0),
+      rows_written: Number(meta.rows_written || 0),
+    }, 200, { "Cache-Control": "public, max-age=30, s-maxage=60" });
   }
 
   if (url.pathname === "/v1/jobs/stats" && request.method === "GET") {
     if (!env.JOBS_DB) return json({ ok: false, error: "Jobs database is not configured." }, 503);
     const cutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
-    const [jobs, companies, newest, run] = await Promise.all([
-      env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE published_at >= ? AND status != 'closed'").bind(cutoff).first(),
-      env.JOBS_DB.prepare("SELECT COUNT(DISTINCT company) AS n FROM jobs WHERE published_at >= ? AND status != 'closed'").bind(cutoff).first(),
+    const [totals, newest, run] = await Promise.all([
+      env.JOBS_DB.prepare("SELECT COUNT(*) AS jobs, COUNT(DISTINCT company) AS employers FROM jobs WHERE published_at >= ? AND status != 'closed'").bind(cutoff).first(),
       env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE first_seen_at >= ?").bind(new Date(now.getTime() - 86400000).toISOString()).first(),
-      env.JOBS_DB.prepare("SELECT * FROM job_collection_runs ORDER BY id DESC LIMIT 1").first(),
+      env.JOBS_DB.prepare("SELECT id, collected_at, boards_total, boards_succeeded, boards_with_errors, jobs_sent, days FROM job_collection_runs ORDER BY id DESC LIMIT 1").first(),
     ]);
     return json({
-      ok: true, window_days: 30,
-      jobs: Number(jobs?.n || 0),
-      employers: Number(companies?.n || 0),
+      ok: true, database: "ready", window_days: 30,
+      jobs: Number(totals?.jobs || 0),
+      employers: Number(totals?.employers || 0),
       discovered_24h: Number(newest?.n || 0),
       latest_collection: run || null,
     }, 200, { "Cache-Control": "public, max-age=60, s-maxage=120" });
@@ -95,37 +101,53 @@ async function handleJobRoutes(request, url, env) {
     // occur in at least one searchable field, so "data analyst" also finds
     // "Analyst, Data" and "Lagos Nigeria" matches "Lagos, Nigeria".
     const queryTokens = q.split(/[\s,]+/).filter(Boolean).slice(0, 8);
+    const ftsPhrase = (value) => '"' + String(value).replace(/"/g, '""') + '"';
     for (const token of queryTokens) {
-      const pattern = "%" + token + "%";
-      where.push("(lower(title) LIKE ? OR lower(company) LIKE ? OR lower(location) LIKE ? OR lower(department) LIKE ? OR lower(team) LIKE ?)");
-      params.push(pattern, pattern, pattern, pattern, pattern);
+      if (token.length >= 3) {
+        where.push("jobs.rowid IN (SELECT rowid FROM jobs_search_fts WHERE jobs_search_fts MATCH ?)");
+        params.push(ftsPhrase(token));
+      } else {
+        const pattern = "%" + token + "%";
+        where.push("(lower(title) LIKE ? OR lower(company) LIKE ? OR lower(location) LIKE ? OR lower(department) LIKE ? OR lower(team) LIKE ?)");
+        params.push(pattern, pattern, pattern, pattern, pattern);
+      }
     }
 
     const locationTokens = location.split(/[\s,]+/).filter(Boolean).slice(0, 5);
     for (const token of locationTokens) {
-      where.push("lower(location) LIKE ?");
-      params.push("%" + token + "%");
+      if (token.length >= 3) {
+        where.push("jobs.rowid IN (SELECT rowid FROM jobs_search_fts WHERE jobs_search_fts MATCH ?)");
+        params.push("location : " + ftsPhrase(token));
+      } else {
+        where.push("lower(location) LIKE ?");
+        params.push("%" + token + "%");
+      }
     }
     if (remote && remote !== "any") {
       where.push("remote_status = ?");
       params.push(remote);
     }
     if (type) {
-      where.push("lower(employment_type) LIKE ?");
-      params.push("%" + type + "%");
+      if (type.length >= 3) {
+        where.push("jobs.rowid IN (SELECT rowid FROM jobs_search_fts WHERE jobs_search_fts MATCH ?)");
+        params.push("employment_type : " + ftsPhrase(type));
+      } else {
+        where.push("lower(employment_type) LIKE ?");
+        params.push("%" + type + "%");
+      }
     }
     const clause = where.join(" AND ");
-    const count = await env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE " + clause).bind(...params).first();
-    const query = "SELECT ats, board_key, external_id, company, title, department, team, employment_type, location, remote_status, published_at, first_seen_at, last_seen_at, status, job_url, apply_url, source_url FROM jobs WHERE " + clause + " ORDER BY published_at DESC, last_seen_at DESC LIMIT ? OFFSET ?";
+    const query = "SELECT ats, board_key, external_id, company, title, department, team, employment_type, location, remote_status, published_at, first_seen_at, last_seen_at, status, job_url, apply_url, source_url, COUNT(*) OVER() AS total_count FROM jobs WHERE " + clause + " ORDER BY published_at DESC, last_seen_at DESC LIMIT ? OFFSET ?";
     const result = await env.JOBS_DB.prepare(query).bind(...params, limit, (page - 1) * limit).all();
+    const total = Number(result.results?.[0]?.total_count || 0);
     return json({
       ok: true,
       days,
-      total: Number(count?.n || 0),
+      total,
       page,
       limit,
-      has_more: page * limit < Number(count?.n || 0),
-      results: result.results || [],
+      has_more: page * limit < total,
+      results: (result.results || []).map(({ total_count, ...job }) => job),
     }, 200, { "Cache-Control": "public, max-age=30, s-maxage=60" });
   }
 
