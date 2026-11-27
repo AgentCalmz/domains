@@ -862,14 +862,49 @@ export default {
     try {
       return await handleRequest(request, env, ctx);
     } catch (error) {
-      return json(
-        {
+      const detail = error instanceof Error ? error.message : "Unknown error";
+      if (/exceeded D1's free tier daily row read limit|daily row read limit/i.test(detail)) {
+        const now = new Date();
+        const reset = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+        const retryAfter = Math.max(1, Math.ceil((reset - now.getTime()) / 1000));
+        return json({
           ok: false,
-          error: "The domain data service could not complete the request.",
-          detail: error instanceof Error ? error.message : "Unknown error",
-        },
-        502,
-      );
+          code: "D1_DAILY_READ_LIMIT",
+          error: "PeachJobs has reached its daily database read allowance.",
+          message: "The saved job listings are safe. Cloudflare will restore search after its daily reset at 00:00 UTC.",
+          retry_after_seconds: retryAfter,
+        }, 429, { "Retry-After": String(retryAfter) });
+      }
+      if (/exceeded D1's free tier daily row write limit|daily row write limit/i.test(detail)) {
+        return json({
+          ok: false,
+          code: "D1_DAILY_WRITE_LIMIT",
+          error: "PeachJobs has reached its daily database write allowance.",
+          message: "The saved job listings are safe. New collection writes can resume after Cloudflare's daily reset at 00:00 UTC.",
+        }, 429);
+      }
+      if (/exceeded maximum database size|maximum db size|database is full/i.test(detail)) {
+        return json({
+          ok: false,
+          code: "D1_STORAGE_LIMIT",
+          error: "The PeachJobs database has reached its storage limit.",
+          message: "Existing data has not been deleted. Database cleanup or a storage-plan change is required.",
+        }, 507);
+      }
+      if (/overloaded|too many requests|resource limit|cpu time limit/i.test(detail)) {
+        return json({
+          ok: false,
+          code: "D1_TEMPORARILY_UNAVAILABLE",
+          error: "The PeachJobs database is temporarily busy.",
+          message: "Please retry this request shortly. Stored listings have not been removed.",
+        }, 503);
+      }
+      return json({
+        ok: false,
+        code: "DOMAIN_DATA_UNAVAILABLE",
+        error: "The domain data service could not complete the request.",
+        detail,
+      }, 502);
     }
   },
 };
