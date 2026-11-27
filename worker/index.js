@@ -198,24 +198,26 @@ async function handleJobRoutes(request, url, env) {
           jobUrl, applyUrl, sourceUrl, nowIso, nowIso, seenRefreshBefore));
       }
       for (let i = 0; i < statements.length; i += 80) await env.JOBS_DB.batch(statements.slice(i, i + 80));
-      await env.JOBS_DB.prepare("UPDATE jobs SET status='stale' WHERE status='open' AND last_seen_at < ?")
-        .bind(new Date(now.getTime() - 4 * 86400000).toISOString()).run();
-      await env.JOBS_DB.prepare("DELETE FROM jobs WHERE COALESCE(published_at,first_seen_at) < ?")
-        .bind(new Date(now.getTime() - JOB_RETENTION_DAYS * 86400000).toISOString()).run();
+      // Full-table maintenance is performed once at the end of the collection run.
       return json({ ok: true, accepted: statements.length, rejected, retention_days: JOB_RETENTION_DAYS });
     }
 
     if (url.pathname === "/v1/ingest/run" && request.method === "POST") {
       let body;
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON body." }, 400); }
-      await env.JOBS_DB.prepare(
+      // Run maintenance once after the collector has finished all posting batches.
+      const staleBefore = new Date(now.getTime() - 4 * 86400000).toISOString();
+      const retentionBefore = new Date(now.getTime() - JOB_RETENTION_DAYS * 86400000).toISOString();
+      const stale = await env.JOBS_DB.prepare("UPDATE jobs SET status='stale' WHERE status='open' AND last_seen_at < ?").bind(staleBefore).run();
+      const pruned = await env.JOBS_DB.prepare("DELETE FROM jobs WHERE published_at < ?").bind(retentionBefore).run();
+      const saved = await env.JOBS_DB.prepare(
         "INSERT INTO job_collection_runs(collected_at,boards_total,boards_succeeded,boards_with_errors,jobs_sent,days) VALUES(?,?,?,?,?,?)"
       ).bind(jobIso(body?.collected_at) || nowIso,
         Math.max(0, Number(body?.boards_total) || 0),
         Math.max(0, Number(body?.boards_succeeded) || 0),
         Math.max(0, Number(body?.boards_with_errors) || 0),
         Math.max(0, Number(body?.jobs_sent) || 0), 30).run();
-      return json({ ok: true });
+      return json({ ok: true, maintenance: { stale: Number(stale.meta?.changes || 0), pruned: Number(pruned.meta?.changes || 0) }, collection_recorded: Boolean(saved.success) });
     }
 
     return json({ ok: false, error: "Unknown ingestion endpoint or method." }, 404);
