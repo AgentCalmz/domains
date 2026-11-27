@@ -71,16 +71,14 @@ async function handleJobRoutes(request, url, env) {
   if (url.pathname === "/v1/jobs/stats" && request.method === "GET") {
     if (!env.JOBS_DB) return json({ ok: false, error: "Jobs database is not configured." }, 503);
     const cutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
-    const [totals, newest, run] = await Promise.all([
+    const [totals, run] = await Promise.all([
       env.JOBS_DB.prepare("SELECT COUNT(*) AS jobs, COUNT(DISTINCT company) AS employers FROM jobs WHERE published_at >= ? AND status != 'closed'").bind(cutoff).first(),
-      env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE first_seen_at >= ?").bind(new Date(now.getTime() - 86400000).toISOString()).first(),
       env.JOBS_DB.prepare("SELECT id, collected_at, boards_total, boards_succeeded, boards_with_errors, jobs_sent, days FROM job_collection_runs ORDER BY id DESC LIMIT 1").first(),
     ]);
     return json({
       ok: true, database: "ready", window_days: 30,
       jobs: Number(totals?.jobs || 0),
       employers: Number(totals?.employers || 0),
-      discovered_24h: Number(newest?.n || 0),
       latest_collection: run || null,
     }, 200, { "Cache-Control": "public, max-age=60, s-maxage=120" });
   }
