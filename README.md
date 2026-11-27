@@ -29,6 +29,8 @@ Release assets keep daily data out of normal Git history. Re-running the workflo
 
 The Worker code is in [worker/index.js](worker/index.js). It is a read-only API and requires no database or secrets.
 
+The PeachJobs D1 service in this same Worker uses the `JOBS_DB` binding. Its `0002_jobs_search_fts.sql` migration adds an FTS5 trigram index to accelerate substring keyword, location and employment-type searches. Apply pending D1 migrations to the remote database before deploying the Worker: `npx wrangler@4 d1 migrations apply teampeach-jobs --remote`. The collector now performs stale-listing and 45-day retention maintenance once after each complete collection run, not once for every job batch. `/v1/jobs/health` reports the current D1 database size in bytes when the query is available.
+
 Endpoints:
 - `GET /` — API information
 - `GET /v1/health` — health check

@@ -57,24 +57,28 @@ async function handleJobRoutes(request, url, env) {
 
   if (url.pathname === "/v1/jobs/health" && request.method === "GET") {
     if (!env.JOBS_DB) return json({ ok: false, service: "teampeach-jobs", error: "JOBS_DB binding is not configured." }, 503);
-    const row = await env.JOBS_DB.prepare("SELECT COUNT(*) AS total FROM jobs").first();
-    return json({ ok: true, service: "teampeach-jobs", database: "ready", total: Number(row?.total || 0), window_days: 30 });
+    const result = await env.JOBS_DB.prepare("SELECT COUNT(*) AS total FROM jobs").all();
+    const meta = result.meta || {};
+    return json({
+      ok: true, service: "teampeach-jobs", database: "ready",
+      total: Number(result.results?.[0]?.total || 0), window_days: 30,
+      database_size_bytes: Number(meta.size_after || 0),
+      rows_read: Number(meta.rows_read || 0),
+      rows_written: Number(meta.rows_written || 0),
+    }, 200, { "Cache-Control": "public, max-age=30, s-maxage=60" });
   }
 
   if (url.pathname === "/v1/jobs/stats" && request.method === "GET") {
     if (!env.JOBS_DB) return json({ ok: false, error: "Jobs database is not configured." }, 503);
     const cutoff = new Date(now.getTime() - 30 * 86400000).toISOString();
-    const [jobs, companies, newest, run] = await Promise.all([
-      env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE published_at >= ? AND status != 'closed'").bind(cutoff).first(),
-      env.JOBS_DB.prepare("SELECT COUNT(DISTINCT company) AS n FROM jobs WHERE published_at >= ? AND status != 'closed'").bind(cutoff).first(),
-      env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE first_seen_at >= ?").bind(new Date(now.getTime() - 86400000).toISOString()).first(),
-      env.JOBS_DB.prepare("SELECT * FROM job_collection_runs ORDER BY id DESC LIMIT 1").first(),
+    const [totals, run] = await Promise.all([
+      env.JOBS_DB.prepare("SELECT COUNT(*) AS jobs, COUNT(DISTINCT company) AS employers FROM jobs WHERE published_at >= ? AND status != 'closed'").bind(cutoff).first(),
+      env.JOBS_DB.prepare("SELECT id, collected_at, boards_total, boards_succeeded, boards_with_errors, jobs_sent, days FROM job_collection_runs ORDER BY id DESC LIMIT 1").first(),
     ]);
     return json({
-      ok: true, window_days: 30,
-      jobs: Number(jobs?.n || 0),
-      employers: Number(companies?.n || 0),
-      discovered_24h: Number(newest?.n || 0),
+      ok: true, database: "ready", window_days: 30,
+      jobs: Number(totals?.jobs || 0),
+      employers: Number(totals?.employers || 0),
       latest_collection: run || null,
     }, 200, { "Cache-Control": "public, max-age=60, s-maxage=120" });
   }
@@ -95,37 +99,53 @@ async function handleJobRoutes(request, url, env) {
     // occur in at least one searchable field, so "data analyst" also finds
     // "Analyst, Data" and "Lagos Nigeria" matches "Lagos, Nigeria".
     const queryTokens = q.split(/[\s,]+/).filter(Boolean).slice(0, 8);
+    const ftsPhrase = (value) => '"' + String(value).replace(/"/g, '""') + '"';
     for (const token of queryTokens) {
-      const pattern = "%" + token + "%";
-      where.push("(lower(title) LIKE ? OR lower(company) LIKE ? OR lower(location) LIKE ? OR lower(department) LIKE ? OR lower(team) LIKE ?)");
-      params.push(pattern, pattern, pattern, pattern, pattern);
+      if (token.length >= 3) {
+        where.push("jobs.rowid IN (SELECT rowid FROM jobs_search_fts WHERE jobs_search_fts MATCH ?)");
+        params.push(ftsPhrase(token));
+      } else {
+        const pattern = "%" + token + "%";
+        where.push("(lower(title) LIKE ? OR lower(company) LIKE ? OR lower(location) LIKE ? OR lower(department) LIKE ? OR lower(team) LIKE ?)");
+        params.push(pattern, pattern, pattern, pattern, pattern);
+      }
     }
 
     const locationTokens = location.split(/[\s,]+/).filter(Boolean).slice(0, 5);
     for (const token of locationTokens) {
-      where.push("lower(location) LIKE ?");
-      params.push("%" + token + "%");
+      if (token.length >= 3) {
+        where.push("jobs.rowid IN (SELECT rowid FROM jobs_search_fts WHERE jobs_search_fts MATCH ?)");
+        params.push("location : " + ftsPhrase(token));
+      } else {
+        where.push("lower(location) LIKE ?");
+        params.push("%" + token + "%");
+      }
     }
     if (remote && remote !== "any") {
       where.push("remote_status = ?");
       params.push(remote);
     }
     if (type) {
-      where.push("lower(employment_type) LIKE ?");
-      params.push("%" + type + "%");
+      if (type.length >= 3) {
+        where.push("jobs.rowid IN (SELECT rowid FROM jobs_search_fts WHERE jobs_search_fts MATCH ?)");
+        params.push("employment_type : " + ftsPhrase(type));
+      } else {
+        where.push("lower(employment_type) LIKE ?");
+        params.push("%" + type + "%");
+      }
     }
     const clause = where.join(" AND ");
-    const count = await env.JOBS_DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE " + clause).bind(...params).first();
-    const query = "SELECT ats, board_key, external_id, company, title, department, team, employment_type, location, remote_status, published_at, first_seen_at, last_seen_at, status, job_url, apply_url, source_url FROM jobs WHERE " + clause + " ORDER BY published_at DESC, last_seen_at DESC LIMIT ? OFFSET ?";
+    const query = "SELECT ats, board_key, external_id, company, title, department, team, employment_type, location, remote_status, published_at, first_seen_at, last_seen_at, status, job_url, apply_url, source_url, COUNT(*) OVER() AS total_count FROM jobs WHERE " + clause + " ORDER BY published_at DESC, last_seen_at DESC LIMIT ? OFFSET ?";
     const result = await env.JOBS_DB.prepare(query).bind(...params, limit, (page - 1) * limit).all();
+    const total = Number(result.results?.[0]?.total_count || 0);
     return json({
       ok: true,
       days,
-      total: Number(count?.n || 0),
+      total,
       page,
       limit,
-      has_more: page * limit < Number(count?.n || 0),
-      results: result.results || [],
+      has_more: page * limit < total,
+      results: (result.results || []).map(({ total_count, ...job }) => job),
     }, 200, { "Cache-Control": "public, max-age=30, s-maxage=60" });
   }
 
@@ -198,24 +218,26 @@ async function handleJobRoutes(request, url, env) {
           jobUrl, applyUrl, sourceUrl, nowIso, nowIso, seenRefreshBefore));
       }
       for (let i = 0; i < statements.length; i += 80) await env.JOBS_DB.batch(statements.slice(i, i + 80));
-      await env.JOBS_DB.prepare("UPDATE jobs SET status='stale' WHERE status='open' AND last_seen_at < ?")
-        .bind(new Date(now.getTime() - 4 * 86400000).toISOString()).run();
-      await env.JOBS_DB.prepare("DELETE FROM jobs WHERE COALESCE(published_at,first_seen_at) < ?")
-        .bind(new Date(now.getTime() - JOB_RETENTION_DAYS * 86400000).toISOString()).run();
+      // Full-table maintenance is performed once at the end of the collection run.
       return json({ ok: true, accepted: statements.length, rejected, retention_days: JOB_RETENTION_DAYS });
     }
 
     if (url.pathname === "/v1/ingest/run" && request.method === "POST") {
       let body;
       try { body = await request.json(); } catch { return json({ ok: false, error: "Invalid JSON body." }, 400); }
-      await env.JOBS_DB.prepare(
+      // Run maintenance once after the collector has finished all posting batches.
+      const staleBefore = new Date(now.getTime() - 4 * 86400000).toISOString();
+      const retentionBefore = new Date(now.getTime() - JOB_RETENTION_DAYS * 86400000).toISOString();
+      const stale = await env.JOBS_DB.prepare("UPDATE jobs SET status='stale' WHERE status='open' AND last_seen_at < ?").bind(staleBefore).run();
+      const pruned = await env.JOBS_DB.prepare("DELETE FROM jobs WHERE published_at < ?").bind(retentionBefore).run();
+      const saved = await env.JOBS_DB.prepare(
         "INSERT INTO job_collection_runs(collected_at,boards_total,boards_succeeded,boards_with_errors,jobs_sent,days) VALUES(?,?,?,?,?,?)"
       ).bind(jobIso(body?.collected_at) || nowIso,
         Math.max(0, Number(body?.boards_total) || 0),
         Math.max(0, Number(body?.boards_succeeded) || 0),
         Math.max(0, Number(body?.boards_with_errors) || 0),
         Math.max(0, Number(body?.jobs_sent) || 0), 30).run();
-      return json({ ok: true });
+      return json({ ok: true, maintenance: { stale: Number(stale.meta?.changes || 0), pruned: Number(pruned.meta?.changes || 0) }, collection_recorded: Boolean(saved.success) });
     }
 
     return json({ ok: false, error: "Unknown ingestion endpoint or method." }, 404);
@@ -838,14 +860,49 @@ export default {
     try {
       return await handleRequest(request, env, ctx);
     } catch (error) {
-      return json(
-        {
+      const detail = error instanceof Error ? error.message : "Unknown error";
+      if (/exceeded D1's free tier daily row read limit|daily row read limit/i.test(detail)) {
+        const now = new Date();
+        const reset = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+        const retryAfter = Math.max(1, Math.ceil((reset - now.getTime()) / 1000));
+        return json({
           ok: false,
-          error: "The domain data service could not complete the request.",
-          detail: error instanceof Error ? error.message : "Unknown error",
-        },
-        502,
-      );
+          code: "D1_DAILY_READ_LIMIT",
+          error: "PeachJobs has reached its daily database read allowance.",
+          message: "The saved job listings are safe. Cloudflare will restore search after its daily reset at 00:00 UTC.",
+          retry_after_seconds: retryAfter,
+        }, 429, { "Retry-After": String(retryAfter) });
+      }
+      if (/exceeded D1's free tier daily row write limit|daily row write limit/i.test(detail)) {
+        return json({
+          ok: false,
+          code: "D1_DAILY_WRITE_LIMIT",
+          error: "PeachJobs has reached its daily database write allowance.",
+          message: "The saved job listings are safe. New collection writes can resume after Cloudflare's daily reset at 00:00 UTC.",
+        }, 429);
+      }
+      if (/exceeded maximum database size|maximum db size|database is full/i.test(detail)) {
+        return json({
+          ok: false,
+          code: "D1_STORAGE_LIMIT",
+          error: "The PeachJobs database has reached its storage limit.",
+          message: "Existing data has not been deleted. Database cleanup or a storage-plan change is required.",
+        }, 507);
+      }
+      if (/overloaded|too many requests|resource limit|cpu time limit/i.test(detail)) {
+        return json({
+          ok: false,
+          code: "D1_TEMPORARILY_UNAVAILABLE",
+          error: "The PeachJobs database is temporarily busy.",
+          message: "Please retry this request shortly. Stored listings have not been removed.",
+        }, 503);
+      }
+      return json({
+        ok: false,
+        code: "DOMAIN_DATA_UNAVAILABLE",
+        error: "The domain data service could not complete the request.",
+        detail,
+      }, 502);
     }
   },
 };
